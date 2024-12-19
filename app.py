@@ -30,7 +30,6 @@ def load_data(uploaded_file) -> pd.DataFrame:
         pd.DataFrame: Loaded dataset.
     """
     try:
-        # Automatically detect Excel or CSV
         if uploaded_file.name.endswith(".xlsx") or uploaded_file.name.endswith(".xls"):
             df = pd.read_excel(uploaded_file)
         elif uploaded_file.name.endswith(".csv"):
@@ -38,9 +37,11 @@ def load_data(uploaded_file) -> pd.DataFrame:
         else:
             raise ValueError("Unsupported file format. Please upload an Excel or CSV file.")
 
+        # Clean up column names for easier processing
+        df.columns = [col.strip().replace(" ", "_").lower() for col in df.columns]
+
         logger.info(f"Successfully loaded dataset with {len(df)} rows and {len(df.columns)} columns.")
         return df
-
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         logger.error(f"Data loading failed: {str(e)}")
@@ -60,10 +61,10 @@ def query_gpt(prompt: str, model="gpt-3.5-turbo") -> str:
         response = openai.ChatCompletion.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant skilled at analyzing datasets."},
+                {"role": "system", "content": "You are a data analysis assistant. Interpret user queries to analyze the dataset and generate the desired output (table or visualization)."},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=300,
+            max_tokens=500,
             temperature=0.7
         )
         return response['choices'][0]['message']['content'].strip()
@@ -87,26 +88,29 @@ def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
     prompt = f"""
     I have a dataset with the following columns: {column_names}.
     User query: '{query}'.
-    Write Python code to filter, sort, or process the dataset to answer the query.
-    The dataset is stored in a DataFrame called 'df', and the result should be stored in a variable called 'result'.
+    Generate Python code to process the dataset stored in a DataFrame called 'df' to fulfill the query. 
+    Store the resulting DataFrame in a variable named 'result'. The code should directly filter, sort, or aggregate data as needed.
+    Do not use hardcoded column names. Base your logic on the provided column names dynamically.
     """
     gpt_response = query_gpt(prompt, model=model)
-    st.write("### GPT-Generated Code")
-    st.code(gpt_response, language="python")
 
-    # Execute the GPT-generated code safely
+    # Execute GPT-generated Python code
     local_context = {"df": df}
     try:
         exec(gpt_response, {}, local_context)
         result = local_context.get("result", None)
-        if result is None:
+        if result is None or not isinstance(result, pd.DataFrame):
             st.error("GPT did not generate a valid result.")
-            return df
+            return pd.DataFrame()
         return result
+    except SyntaxError as e:
+        st.error(f"Syntax error in GPT-generated code: {e}")
+        logger.error(f"Syntax error: {e}")
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error executing GPT-generated logic: {e}")
         logger.error(f"Execution error: {e}")
-        return df
+        return pd.DataFrame()
 
 def main():
     st.title("Dynamic Dataset Analysis with GPT")
@@ -123,7 +127,7 @@ def main():
             st.dataframe(df)
 
             # Query input
-            query = st.text_input("Ask a question about your dataset", placeholder="e.g., Show top 5 rows by revenue")
+            query = st.text_input("Ask a question about your dataset", placeholder="e.g., Show total impressions for November vs October")
             if query:
                 st.write(f"**Your Query:** {query}")
 
@@ -131,11 +135,11 @@ def main():
                 processed_df = analyze_query_with_gpt(df, query, model="gpt-3.5-turbo")
 
                 # Display the processed results
-                st.write("### Query Results")
-                st.dataframe(processed_df)
-
-                # Export results as CSV
                 if not processed_df.empty:
+                    st.write("### Query Results")
+                    st.dataframe(processed_df)
+
+                    # Export results as CSV
                     csv_data = processed_df.to_csv(index=False)
                     st.download_button(
                         label="Download Results as CSV",
@@ -144,19 +148,21 @@ def main():
                         mime="text/csv"
                     )
 
-                # Visualization options
-                st.write("### Visualization")
-                chart_type = st.selectbox("Select Chart Type", ["Bar Chart", "Line Chart", "Scatter Plot"])
-                if chart_type:
-                    x_axis = st.selectbox("Select X-Axis", processed_df.columns)
-                    y_axis = st.selectbox("Select Y-Axis", processed_df.columns)
-                    if chart_type == "Bar Chart":
-                        fig = px.bar(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
-                    elif chart_type == "Line Chart":
-                        fig = px.line(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
-                    elif chart_type == "Scatter Plot":
-                        fig = px.scatter(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Visualization options
+                    st.write("### Visualization")
+                    chart_type = st.selectbox("Select Chart Type", ["Bar Chart", "Line Chart", "Scatter Plot"])
+                    if chart_type:
+                        x_axis = st.selectbox("Select X-Axis", processed_df.columns)
+                        y_axis = st.selectbox("Select Y-Axis", processed_df.columns)
+                        if chart_type == "Bar Chart":
+                            fig = px.bar(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                        elif chart_type == "Line Chart":
+                            fig = px.line(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                        elif chart_type == "Scatter Plot":
+                            fig = px.scatter(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                        st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("No results generated from your query.")
 
 if __name__ == "__main__":
     main()
