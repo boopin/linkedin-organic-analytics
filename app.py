@@ -58,7 +58,7 @@ class DataAnalyzer:
             # Store table name
             self.current_table = 'data_table'
 
-            # Save to SQLite
+            # Save to SQLite (replace existing table)
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
             # Get schema info
