@@ -205,3 +205,11 @@ def main():
         st.markdown("""
         This app uses:
         - SQLite for data analysis
+        - Plotly for visualizations
+        - Streamlit for the UI
+
+        Upload any Excel or CSV file, and analyze it with natural language queries!
+        """)
+
+if __name__ == "__main__":
+    main()
