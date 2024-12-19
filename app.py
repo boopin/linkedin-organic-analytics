@@ -1,180 +1,175 @@
 import streamlit as st
 import pandas as pd
+import openai
 import plotly.express as px
-import plotly.graph_objects as go  # Updated import
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
-import time
-from typing import Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure page settings
+# Configure Streamlit page settings
 st.set_page_config(
-    page_title="LinkedIn Analytics Dashboard",
+    page_title="Dynamic Dataset Analysis with GPT",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state
-if 'data_timestamp' not in st.session_state:
-    st.session_state.data_timestamp = None
-if 'error_count' not in st.session_state:
-    st.session_state.error_count = 0
-
-class DataValidationError(Exception):
-    """Custom exception for data validation errors."""
-    pass
+# Load OpenAI API key from Streamlit secrets
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 @st.cache_data(ttl=3600)
-def load_data(uploaded_file) -> Optional[pd.DataFrame]:
+def load_data(uploaded_file) -> pd.DataFrame:
     """
-    Load and preprocess LinkedIn data with validation.
+    Load and preprocess dataset from the uploaded file.
 
     Args:
-        uploaded_file: Streamlit uploaded file object.
+        uploaded_file: The uploaded file object.
     Returns:
-        Preprocessed DataFrame or None if validation fails.
+        pd.DataFrame: Loaded dataset.
     """
     try:
-        df = pd.read_excel(uploaded_file)
+        # Automatically detect Excel or CSV
+        if uploaded_file.name.endswith(".xlsx") or uploaded_file.name.endswith(".xls"):
+            df = pd.read_excel(uploaded_file)
+        elif uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            raise ValueError("Unsupported file format. Please upload an Excel or CSV file.")
 
-        # Validate required columns
-        required_columns = ['Date', 'Likes', 'Comments', 'Shares']
-        missing_columns = [col for col in required_columns if col.lower() not in [c.lower() for c in df.columns]]
-
-        if missing_columns:
-            raise DataValidationError(f"Missing required columns: {', '.join(missing_columns)}")
-
-        # Standardize column names
-        df.columns = [col.lower().strip() for col in df.columns]
-
-        # Convert date columns
-        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-        # Handle missing values
-        numeric_columns = ['likes', 'comments', 'shares']
-        df[numeric_columns] = df[numeric_columns].fillna(0)
-
-        # Add engagement score
-        df['engagement_score'] = df['likes'] * 1 + df['comments'] * 2 + df['shares'] * 3
-
-        logger.info(f"Successfully loaded data with {len(df)} rows")
-        st.session_state.data_timestamp = time.time()
-
+        logger.info(f"Successfully loaded dataset with {len(df)} rows and {len(df.columns)} columns.")
         return df
 
-    except DataValidationError as e:
-        st.error(f"Data Validation Error: {str(e)}")
-        logger.error(f"Data validation failed: {str(e)}")
-        return None
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
         logger.error(f"Data loading failed: {str(e)}")
-        st.session_state.error_count += 1
-        return None
+        raise e
 
-def create_visualization(df: pd.DataFrame, metric: str, title: str = None) -> go.Figure:
+def query_gpt(prompt: str) -> str:
     """
-    Create enhanced visualization for results.
+    Query GPT API with a prompt and return the response.
 
     Args:
-        df: Input DataFrame
-        metric: Metric to visualize
-        title: Optional custom title.
+        prompt (str): The user's query.
     Returns:
-        Plotly figure object.
+        str: GPT-generated Python code or response.
     """
-    if not title:
-        title = f'{metric.replace("_", " ").title()} by Post'
+    try:
+        response = openai.Completion.create(
+            engine="text-davinci-003",  # Use "gpt-4" if available
+            prompt=prompt,
+            max_tokens=300,
+            temperature=0.7
+        )
+        return response.choices[0].text.strip()
+    except Exception as e:
+        st.error(f"Error querying GPT: {e}")
+        logger.error(f"GPT query error: {e}")
+        return ""
 
-    if metric not in df.columns:
-        raise ValueError(f"Metric '{metric}' is not in the DataFrame columns: {df.columns}")
+def convert_to_monthly(df: pd.DataFrame, date_column: str, value_columns: list) -> pd.DataFrame:
+    """
+    Converts daily data into monthly aggregated data.
 
-    if df.empty:
-        raise ValueError("The DataFrame is empty. No data to visualize.")
+    Args:
+        df (pd.DataFrame): The dataset containing daily data.
+        date_column (str): The column containing the dates.
+        value_columns (list): Columns to aggregate (e.g., numeric data).
+    Returns:
+        pd.DataFrame: Monthly aggregated data.
+    """
+    df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
+    df["Month"] = df[date_column].dt.to_period("M")  # Extract month
+    monthly_df = df.groupby("Month")[value_columns].sum().reset_index()
+    return monthly_df
 
-    fig = px.bar(
-        df,
-        x='Post Text' if 'post text' in df.columns else df.index,
-        y=metric,
-        title=title,
-        labels={'x': 'Post', 'y': metric.replace('_', ' ').title()},
-        template="plotly_white"
-    )
+def analyze_query_with_gpt(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """
+    Use GPT to interpret the query and process the DataFrame dynamically.
 
-    fig.update_layout(
-        hoverlabel=dict(bgcolor="white"),
-        hovermode='x unified',
-        showlegend=False,
-        height=500
-    )
+    Args:
+        df (pd.DataFrame): The uploaded dataset.
+        query (str): User's natural language query.
+    Returns:
+        pd.DataFrame: Processed DataFrame based on GPT-generated logic.
+    """
+    column_names = df.columns.tolist()
+    prompt = f"""
+    I have a dataset with the following columns: {column_names}.
+    User query: '{query}'.
+    Write Python code to filter, sort, or process the dataset to answer the query.
+    If the query involves 'month', aggregate daily data into monthly data.
+    The dataset is stored in a DataFrame called 'df', and the result should be stored in a variable called 'result'.
+    """
+    gpt_response = query_gpt(prompt)
+    st.write("### GPT-Generated Code")
+    st.code(gpt_response, language="python")
 
-    return fig
-
-def display_metrics_summary(df: pd.DataFrame):
-    """Display key metrics summary in a clean layout."""
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Total Posts", len(df), delta=None)
-
-    with col2:
-        st.metric("Avg Engagement", f"{df['engagement_score'].mean():.1f}", delta=f"{df['engagement_score'].std():.1f} σ")
-
-    with col3:
-        st.metric("Total Likes", df['likes'].sum(), delta=f"{df['likes'].mean():.1f} avg")
-
-    with col4:
-        st.metric("Total Comments", df['comments'].sum(), delta=f"{df['comments'].mean():.1f} avg")
+    # Execute the GPT-generated code safely
+    local_context = {"df": df}
+    try:
+        exec(gpt_response, {}, local_context)
+        result = local_context.get("result", None)
+        if result is None:
+            st.error("GPT did not generate a valid result.")
+            return df
+        return result
+    except Exception as e:
+        st.error(f"Error executing GPT-generated logic: {e}")
+        logger.error(f"Execution error: {e}")
+        return df
 
 def main():
-    # Page header
-    st.markdown("""
-        <style>
-        .title {
-            font-size: 42px;
-            font-weight: bold;
-            color: #0A66C2;
-            margin-bottom: 20px;
-        }
-        .subtitle {
-            font-size: 24px;
-            color: #666;
-            margin-bottom: 30px;
-        }
-        </style>
-        <div class="title">LinkedIn Posts Analytics</div>
-        <div class="subtitle">Upload your data and analyze your posts with natural language queries</div>
-    """, unsafe_allow_html=True)
+    st.title("Dynamic Dataset Analysis with GPT")
 
     # File uploader
-    uploaded_file = st.file_uploader("Upload your LinkedIn data export (Excel file)", type=['xlsx', 'xls'])
-
-    if uploaded_file is not None:
-        with st.spinner('Loading and processing your data...'):
+    uploaded_file = st.file_uploader("Upload your dataset (Excel or CSV)", type=["xlsx", "xls", "csv"])
+    if uploaded_file:
+        with st.spinner("Processing your file..."):
             df = load_data(uploaded_file)
 
         if df is not None:
-            # Display metrics summary
-            display_metrics_summary(df)
+            # Display dataset preview
+            st.write("### Dataset Preview")
+            st.dataframe(df)
 
-            # Top 5 posts by engagement
-            top_posts = df.nlargest(5, 'engagement_score')[['date', 'likes', 'comments', 'shares', 'engagement_score']]
-            st.write("### Top 5 Posts by Engagement Score")
-            st.dataframe(top_posts)
+            # Query input
+            query = st.text_input("Ask a question about your dataset", placeholder="e.g., Show month-on-month sales comparison")
+            if query:
+                st.write(f"**Your Query:** {query}")
 
-            # Visualization
-            st.write("### Engagement Score Visualization")
-            try:
-                fig = create_visualization(top_posts, 'engagement_score', "Top 5 Posts by Engagement Score")
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Error creating visualization: {str(e)}")
-                logger.error(f"Visualization error: {str(e)}")
+                # Analyze the query using GPT
+                processed_df = analyze_query_with_gpt(df, query)
+
+                # Display the processed results
+                st.write("### Query Results")
+                st.dataframe(processed_df)
+
+                # Export results as CSV
+                if not processed_df.empty:
+                    csv_data = processed_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=csv_data,
+                        file_name="query_results.csv",
+                        mime="text/csv"
+                    )
+
+                # Visualization options
+                st.write("### Visualization")
+                chart_type = st.selectbox("Select Chart Type", ["Bar Chart", "Line Chart", "Scatter Plot"])
+                if chart_type:
+                    x_axis = st.selectbox("Select X-Axis", processed_df.columns)
+                    y_axis = st.selectbox("Select Y-Axis", processed_df.columns)
+                    if chart_type == "Bar Chart":
+                        fig = px.bar(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                    elif chart_type == "Line Chart":
+                        fig = px.line(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                    elif chart_type == "Scatter Plot":
+                        fig = px.scatter(processed_df, x=x_axis, y=y_axis, title=f"{chart_type}")
+                    st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
