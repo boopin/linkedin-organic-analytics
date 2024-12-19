@@ -156,15 +156,19 @@ def main():
                         with st.spinner("Analyzing your data..."):
                             df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
 
-                        # Display results
-                        tab1, tab2 = st.tabs(["🔹 Visualization", "🔍 Query"])
+                        # Determine if the user wants a table or chart
+                        if "table" in user_query.lower():
+                            st.dataframe(df_result)  # Display as table
+                        else:
+                            # Display results
+                            tab1, tab2 = st.tabs(["🔹 Visualization", "🔍 Query"])
 
-                        with tab1:
-                            fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
-                            st.plotly_chart(fig, use_container_width=True)
+                            with tab1:
+                                fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
+                                st.plotly_chart(fig, use_container_width=True)
 
-                        with tab2:
-                            st.code(sql_query, language='sql')
+                            with tab2:
+                                st.code(sql_query, language='sql')
 
                     except Exception as e:
                         st.error(f"Error during analysis: {str(e)}")
