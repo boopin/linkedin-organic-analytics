@@ -100,9 +100,9 @@ class DataAnalyzer:
         logger.info(f"Available columns in the table: {available_columns}")
 
         # Handle specific queries dynamically
-        if "top 5 posts" in user_query.lower():
+        if "top 5 posts" in user_query.lower() and "likes" in user_query.lower():
             column_mapping = {
-                'impressions': next((col for col in available_columns if 'impressions' in col), None),
+                'likes': next((col for col in available_columns if 'likes' in col), None),
                 'post_title': next((col for col in available_columns if 'post_title' in col), None),
                 'posted_by': next((col for col in available_columns if 'posted_by' in col), None),
                 'post_link': next((col for col in available_columns if 'post_link' in col), None),
@@ -117,9 +117,9 @@ class DataAnalyzer:
                 SELECT {column_mapping['post_title']} AS post_title,
                        {column_mapping['posted_by']} AS posted_by,
                        {column_mapping['post_link']} AS post_link,
-                       {column_mapping['impressions']} AS impressions
+                       {column_mapping['likes']} AS likes
                 FROM {self.current_table}
-                ORDER BY {column_mapping['impressions']} DESC
+                ORDER BY {column_mapping['likes']} DESC
                 LIMIT 5;
             """
 
