@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go  # Updated import
 from datetime import datetime, timedelta
-import re
-import time
 import logging
-from typing import Tuple, Optional, Dict, List
+import time
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,24 +22,22 @@ st.set_page_config(
 # Initialize session state
 if 'data_timestamp' not in st.session_state:
     st.session_state.data_timestamp = None
-if 'processing_history' not in st.session_state:
-    st.session_state.processing_history = []
 if 'error_count' not in st.session_state:
     st.session_state.error_count = 0
 
 class DataValidationError(Exception):
-    """Custom exception for data validation errors"""
+    """Custom exception for data validation errors."""
     pass
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600)
 def load_data(uploaded_file) -> Optional[pd.DataFrame]:
     """
-    Load and preprocess LinkedIn data with caching and validation.
+    Load and preprocess LinkedIn data with validation.
 
     Args:
-        uploaded_file: Streamlit uploaded file object
+        uploaded_file: Streamlit uploaded file object.
     Returns:
-        Preprocessed DataFrame or None if validation fails
+        Preprocessed DataFrame or None if validation fails.
     """
     try:
         df = pd.read_excel(uploaded_file)
@@ -79,16 +77,16 @@ def load_data(uploaded_file) -> Optional[pd.DataFrame]:
         st.session_state.error_count += 1
         return None
 
-def create_visualization(df: pd.DataFrame, metric: str, title: str = None) -> px.Figure:
+def create_visualization(df: pd.DataFrame, metric: str, title: str = None) -> go.Figure:
     """
     Create enhanced visualization for results.
 
     Args:
         df: Input DataFrame
         metric: Metric to visualize
-        title: Optional custom title
+        title: Optional custom title.
     Returns:
-        Plotly figure object
+        Plotly figure object.
     """
     if not title:
         title = f'{metric.replace("_", " ").title()} by Post'
@@ -99,7 +97,6 @@ def create_visualization(df: pd.DataFrame, metric: str, title: str = None) -> px
     if df.empty:
         raise ValueError("The DataFrame is empty. No data to visualize.")
 
-    # Use meaningful x-axis (defaulting to index if no 'Post Text' column)
     fig = px.bar(
         df,
         x='Post Text' if 'post text' in df.columns else df.index,
