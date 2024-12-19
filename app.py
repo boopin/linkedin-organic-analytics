@@ -49,7 +49,7 @@ def load_data(uploaded_file) -> pd.DataFrame:
 
 def query_gpt(prompt: str) -> str:
     """
-    Query GPT API with a prompt and return the response.
+    Query GPT API with a prompt using the ChatCompletion method.
 
     Args:
         prompt (str): The user's query.
@@ -57,13 +57,16 @@ def query_gpt(prompt: str) -> str:
         str: GPT-generated Python code or response.
     """
     try:
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # Use "gpt-4" if available
-            prompt=prompt,
+        response = openai.ChatCompletion.create(
+            model="gpt-4",  # Use "gpt-4" or "gpt-3.5-turbo"
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant skilled at analyzing datasets."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=300,
             temperature=0.7
         )
-        return response.choices[0].text.strip()
+        return response['choices'][0]['message']['content'].strip()
     except Exception as e:
         st.error(f"Error querying GPT: {e}")
         logger.error(f"GPT query error: {e}")
