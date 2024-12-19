@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import openai
 import plotly.express as px
-from datetime import datetime
 import logging
 
 # Configure logging
@@ -73,22 +72,6 @@ def query_gpt(prompt: str, model="gpt-3.5-turbo") -> str:
         logger.error(f"GPT query error: {e}")
         return ""
 
-def convert_to_monthly(df: pd.DataFrame, date_column: str, value_columns: list) -> pd.DataFrame:
-    """
-    Converts daily data into monthly aggregated data.
-
-    Args:
-        df (pd.DataFrame): The dataset containing daily data.
-        date_column (str): The column containing the dates.
-        value_columns (list): Columns to aggregate (e.g., numeric data).
-    Returns:
-        pd.DataFrame: Monthly aggregated data.
-    """
-    df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
-    df["Month"] = df[date_column].dt.to_period("M")  # Extract month
-    monthly_df = df.groupby("Month")[value_columns].sum().reset_index()
-    return monthly_df
-
 def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") -> pd.DataFrame:
     """
     Use GPT to interpret the query and process the DataFrame dynamically.
@@ -105,7 +88,6 @@ def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
     I have a dataset with the following columns: {column_names}.
     User query: '{query}'.
     Write Python code to filter, sort, or process the dataset to answer the query.
-    If the query involves 'month', aggregate daily data into monthly data.
     The dataset is stored in a DataFrame called 'df', and the result should be stored in a variable called 'result'.
     """
     gpt_response = query_gpt(prompt, model=model)
@@ -141,7 +123,7 @@ def main():
             st.dataframe(df)
 
             # Query input
-            query = st.text_input("Ask a question about your dataset", placeholder="e.g., Show month-on-month sales comparison")
+            query = st.text_input("Ask a question about your dataset", placeholder="e.g., Show top 5 rows by revenue")
             if query:
                 st.write(f"**Your Query:** {query}")
 
