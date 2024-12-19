@@ -45,7 +45,7 @@ class DataAnalyzer:
                 for c in df.columns
             ]
             logger.info(f"Original columns: {original_columns}")
-            logger.info(f"Cleaned columns: {df.columns.tolist()}")
+            logger.info(f"Normalized columns: {df.columns.tolist()}")
 
             # Process date column
             if 'date' in df.columns:
@@ -97,6 +97,7 @@ class DataAnalyzer:
         # Fetch available columns
         cursor = self.conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+        logger.info(f"Available columns in the table: {available_columns}")
 
         # Handle specific queries dynamically
         if "top 5 posts" in user_query.lower():
@@ -106,6 +107,7 @@ class DataAnalyzer:
                 'posted_by': next((col for col in available_columns if 'posted_by' in col), None),
                 'post_link': next((col for col in available_columns if 'post_link' in col), None),
             }
+            logger.info(f"Column mapping: {column_mapping}")
 
             missing_columns = [key for key, value in column_mapping.items() if value is None]
             if missing_columns:
@@ -212,7 +214,6 @@ def main():
 
                     except Exception as e:
                         st.error(f"Error during analysis: {str(e)}")
-
         else:
             st.error(f"Error loading data: {schema_info}")
 
