@@ -57,25 +57,49 @@ def query_gpt_for_analysis(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
     Returns:
         str: GPT's response with analysis.
     """
-    # Extract dataset context
-    column_names = df.columns.tolist()
+    # Detect and parse date column
+    date_column = None
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            date_column = col
+            break
+
+    if date_column:
+        df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
+        df['Month'] = df[date_column].dt.to_period('M')
+
+        # Perform monthly aggregation
+        numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+        monthly_aggregated_df = df.groupby('Month')[numeric_columns].sum().reset_index()
+
+        # Include aggregated data in the context
+        aggregated_sample = monthly_aggregated_df.head(5).to_dict(orient="records")
+    else:
+        monthly_aggregated_df = None
+        aggregated_sample = "No monthly data available."
+
+    # Extract daily sample data
     sample_data = df.head(5).to_dict(orient="records")
+
+    # Dataset summary for GPT
     dataset_summary = f"""
-    The dataset has {len(df)} rows and {len(column_names)} columns.
-    Column names: {column_names}.
+    The dataset has {len(df)} rows and {len(df.columns)} columns.
+    Column names: {df.columns.tolist()}.
     Here are the first 5 rows of the dataset:
     {sample_data}
+
+    Here is the aggregated monthly data (first 5 rows):
+    {aggregated_sample}
     """
 
-    # Construct the GPT prompt
+    # GPT prompt
     prompt = f"""
     I have the following dataset:
     {dataset_summary}
 
     User query: '{query}'.
 
-    Please analyze the dataset and answer the query. Provide your response in plain text or as a Markdown table.
-    If needed, perform calculations based on the dataset. Always base your response on the provided data and context.
+    If the query references months or asks for aggregated metrics, use the monthly aggregated data. Provide your response in plain text or as a Markdown table.
     """
 
     try:
