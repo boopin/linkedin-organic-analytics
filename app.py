@@ -44,9 +44,16 @@ class DataAnalyzer:
 
             # Process date column
             if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
-                df['year_month'] = df['date'].dt.to_period('M').astype(str)  # e.g., '2023-10'
-                df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                if df['date'].isnull().all():
+                    logger.warning("The 'date' column contains no valid dates. Please check the uploaded file.")
+                    st.warning("The 'date' column in your file contains no valid dates. Please upload a file with properly formatted dates.")
+                else:
+                    df['year_month'] = df['date'].dt.to_period('M').astype(str)  # e.g., '2023-10'
+                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
+            else:
+                logger.warning("No 'date' column found in the uploaded data.")
+                st.warning("No 'date' column found in the uploaded data. Columns 'year_month' and 'quarter' cannot be generated.")
 
             # Store table name
             self.current_table = 'data_table'
@@ -78,25 +85,20 @@ class DataAnalyzer:
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {str(e)}")
-            raise Exception(f"Analysis failed: {str(e)}")
+            raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted and the necessary columns exist.")
 
     def generate_sql(self, user_query: str, schema_info: str) -> str:
         """Generate SQL query using the user's prompt"""
-        prompt = f"""
-        Given a database table with the following schema:
-        {schema_info}
+        # Fetch available columns
+        cursor = self.conn.cursor()
+        available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
 
-        Generate a SQL query to answer this question: "{user_query}"
+        if "year_month" not in available_columns:
+            raise Exception("The column 'year_month' is missing. Ensure your data includes a valid 'date' column.")
+        if "quarter" not in available_columns:
+            raise Exception("The column 'quarter' is missing. Ensure your data includes a valid 'date' column.")
 
-        Requirements:
-        - Use only the columns shown above
-        - Return results that can be visualized
-        - Use proper SQL syntax for SQLite
-        - Return only the SQL query, no explanations
-
-        SQL Query:
-        """
-        # Mocking AI response for the purpose of local execution
+        # Generate SQL based on query type
         if "monthly" in user_query.lower():
             return f"SELECT year_month AS month, SUM(impressions_total) AS total_impressions FROM {self.current_table} GROUP BY year_month ORDER BY year_month;"
         elif "quarterly" in user_query.lower():
