@@ -46,6 +46,63 @@ def load_data(uploaded_file) -> pd.DataFrame:
         logger.error(f"Data loading failed: {str(e)}")
         raise e
 
+def preprocess_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Detect and preprocess the dataset for easier querying and analysis.
+
+    Args:
+        df (pd.DataFrame): The input dataset.
+    Returns:
+        pd.DataFrame: Preprocessed dataset.
+    """
+    # Detect and parse date column
+    date_column = None
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            date_column = col
+            break
+
+    if date_column:
+        df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
+        df['Month'] = df[date_column].dt.to_period('M')  # Extract month for aggregation
+    else:
+        st.warning("No valid date column detected in the dataset.")
+
+    return df
+
+def summarize_dataset(df: pd.DataFrame) -> str:
+    """
+    Summarize the dataset structure and provide a preview for GPT.
+
+    Args:
+        df (pd.DataFrame): The input dataset.
+    Returns:
+        str: A text summary of the dataset.
+    """
+    sample_data = df.head(5).to_dict(orient="records")
+    numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+    date_column = None
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            date_column = col
+            break
+
+    if date_column:
+        min_date = df[date_column].min()
+        max_date = df[date_column].max()
+        date_summary = f"Date range: {min_date} to {max_date}."
+    else:
+        date_summary = "No date column detected."
+
+    summary = f"""
+    The dataset has {len(df)} rows and {len(df.columns)} columns.
+    Numeric columns: {numeric_columns}.
+    {date_summary}
+    Here are the first 5 rows of the dataset:
+    {sample_data}
+    """
+    return summary
+
 def query_gpt_for_analysis(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") -> str:
     """
     Query GPT API for analysis based on dataset context and user query.
@@ -57,40 +114,7 @@ def query_gpt_for_analysis(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
     Returns:
         str: GPT's response with analysis.
     """
-    # Detect and parse date column
-    date_column = None
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            date_column = col
-            break
-
-    if date_column:
-        df[date_column] = pd.to_datetime(df[date_column], errors="coerce")
-        df['Month'] = df[date_column].dt.to_period('M')
-
-        # Perform monthly aggregation
-        numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
-        monthly_aggregated_df = df.groupby('Month')[numeric_columns].sum().reset_index()
-
-        # Include aggregated data in the context
-        aggregated_sample = monthly_aggregated_df.head(5).to_dict(orient="records")
-    else:
-        monthly_aggregated_df = None
-        aggregated_sample = "No monthly data available."
-
-    # Extract daily sample data
-    sample_data = df.head(5).to_dict(orient="records")
-
-    # Dataset summary for GPT
-    dataset_summary = f"""
-    The dataset has {len(df)} rows and {len(df.columns)} columns.
-    Column names: {df.columns.tolist()}.
-    Here are the first 5 rows of the dataset:
-    {sample_data}
-
-    Here is the aggregated monthly data (first 5 rows):
-    {aggregated_sample}
-    """
+    dataset_summary = summarize_dataset(df)
 
     # GPT prompt
     prompt = f"""
@@ -99,7 +123,8 @@ def query_gpt_for_analysis(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
 
     User query: '{query}'.
 
-    If the query references months or asks for aggregated metrics, use the monthly aggregated data. Provide your response in plain text or as a Markdown table.
+    Analyze the dataset based on the query and provide your response in plain text or as a Markdown table.
+    Perform any calculations required and include numeric results where applicable. If months or dates are mentioned, use the 'Month' column for aggregation if available.
     """
 
     try:
@@ -126,6 +151,7 @@ def main():
     if uploaded_file:
         with st.spinner("Processing your file..."):
             df = load_data(uploaded_file)
+            df = preprocess_dataset(df)
 
         if df is not None:
             # Display dataset preview
