@@ -205,13 +205,24 @@ def main():
             with st.expander("View Data Schema"):
                 st.code(schema_info)
             
-            # Query input
-            user_query = st.text_area(
-                "What would you like to know about your data?",
-                placeholder="e.g., 'Show me the trend of engagement over time' or 'What are the top 5 posts by comments?'"
-            )
+            # Create columns for query input and button
+            col1, col2 = st.columns([4, 1])
             
-            if user_query:
+            with col1:
+                # Query input
+                user_query = st.text_area(
+                    "What would you like to know about your data?",
+                    placeholder="e.g., 'Show me the trend of engagement over time' or 'What are the top 5 posts by comments?'",
+                    height=100
+                )
+            
+            with col2:
+                st.write("")  # Add some spacing
+                st.write("")  # Add some spacing
+                analyze_button = st.button("🔍 Analyze", type="primary", use_container_width=True)
+            
+            # Only run analysis when button is clicked
+            if analyze_button and user_query:
                 try:
                     with st.spinner("Analyzing your data..."):
                         df_result, viz_config, sql_query = st.session_state.analyzer.analyze(
@@ -238,6 +249,8 @@ def main():
                         
                 except Exception as e:
                     st.error(str(e))
+            elif analyze_button and not user_query:
+                st.warning("Please enter a question about your data before analyzing.")
         else:
             st.error(f"Error loading data: {schema_info}")
     
