@@ -100,15 +100,24 @@ class DataAnalyzer:
 
         # Handle specific queries dynamically
         if "top 5 posts" in user_query.lower():
-            required_columns = ['impressions', 'post_title', 'posted_by', 'post_link']
-            missing_columns = [col for col in required_columns if col not in available_columns]
+            column_mapping = {
+                'impressions': next((col for col in available_columns if 'impressions' in col), None),
+                'post_title': next((col for col in available_columns if 'post_title' in col), None),
+                'posted_by': next((col for col in available_columns if 'posted_by' in col), None),
+                'post_link': next((col for col in available_columns if 'post_link' in col), None),
+            }
+
+            missing_columns = [key for key, value in column_mapping.items() if value is None]
             if missing_columns:
                 raise Exception(f"The following required columns are missing from your data: {', '.join(missing_columns)}")
 
             return f"""
-                SELECT post_title, posted_by, post_link, impressions
+                SELECT {column_mapping['post_title']} AS post_title,
+                       {column_mapping['posted_by']} AS posted_by,
+                       {column_mapping['post_link']} AS post_link,
+                       {column_mapping['impressions']} AS impressions
                 FROM {self.current_table}
-                ORDER BY impressions DESC
+                ORDER BY {column_mapping['impressions']} DESC
                 LIMIT 5;
             """
 
