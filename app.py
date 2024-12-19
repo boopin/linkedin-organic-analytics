@@ -47,18 +47,19 @@ def load_data(uploaded_file) -> pd.DataFrame:
         logger.error(f"Data loading failed: {str(e)}")
         raise e
 
-def query_gpt(prompt: str) -> str:
+def query_gpt(prompt: str, model="gpt-3.5-turbo") -> str:
     """
     Query GPT API with a prompt using the ChatCompletion method.
 
     Args:
         prompt (str): The user's query.
+        model (str): The OpenAI model to use (e.g., "gpt-4" or "gpt-3.5-turbo").
     Returns:
         str: GPT-generated Python code or response.
     """
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",  # Use "gpt-3.5-turbo" if preferred
+            model=model,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant skilled at analyzing datasets."},
                 {"role": "user", "content": prompt}
@@ -88,13 +89,14 @@ def convert_to_monthly(df: pd.DataFrame, date_column: str, value_columns: list) 
     monthly_df = df.groupby("Month")[value_columns].sum().reset_index()
     return monthly_df
 
-def analyze_query_with_gpt(df: pd.DataFrame, query: str) -> pd.DataFrame:
+def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") -> pd.DataFrame:
     """
     Use GPT to interpret the query and process the DataFrame dynamically.
 
     Args:
         df (pd.DataFrame): The uploaded dataset.
         query (str): User's natural language query.
+        model (str): The OpenAI model to use (e.g., "gpt-4" or "gpt-3.5-turbo").
     Returns:
         pd.DataFrame: Processed DataFrame based on GPT-generated logic.
     """
@@ -106,7 +108,7 @@ def analyze_query_with_gpt(df: pd.DataFrame, query: str) -> pd.DataFrame:
     If the query involves 'month', aggregate daily data into monthly data.
     The dataset is stored in a DataFrame called 'df', and the result should be stored in a variable called 'result'.
     """
-    gpt_response = query_gpt(prompt)
+    gpt_response = query_gpt(prompt, model=model)
     st.write("### GPT-Generated Code")
     st.code(gpt_response, language="python")
 
@@ -144,7 +146,7 @@ def main():
                 st.write(f"**Your Query:** {query}")
 
                 # Analyze the query using GPT
-                processed_df = analyze_query_with_gpt(df, query)
+                processed_df = analyze_query_with_gpt(df, query, model="gpt-3.5-turbo")
 
                 # Display the processed results
                 st.write("### Query Results")
