@@ -12,7 +12,9 @@ logger = logging.getLogger(__name__)
 
 class DataAnalyzer:
     def __init__(self):
-        self.conn = sqlite3.connect(':memory:')
+        if 'db_conn' not in st.session_state:
+            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+        self.conn = st.session_state.db_conn
         self.current_table = None
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
