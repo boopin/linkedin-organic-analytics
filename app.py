@@ -95,16 +95,32 @@ class DataAnalyzer:
 
         if "year_month" not in available_columns:
             raise Exception("The column 'year_month' is missing. Ensure your data includes a valid 'date' column.")
-        if "quarter" not in available_columns:
-            raise Exception("The column 'quarter' is missing. Ensure your data includes a valid 'date' column.")
 
         # Generate SQL based on query type
-        if "monthly" in user_query.lower():
-            return f"SELECT year_month AS month, SUM(impressions_total) AS total_impressions FROM {self.current_table} GROUP BY year_month ORDER BY year_month;"
+        if "november" in user_query.lower() and "october" in user_query.lower():
+            return f"""
+                SELECT year_month AS month, SUM(impressions_total) AS total_impressions 
+                FROM {self.current_table} 
+                WHERE year_month IN ('2024-10', '2024-11') 
+                GROUP BY year_month 
+                ORDER BY year_month;
+            """
+        elif "monthly" in user_query.lower():
+            return f"""
+                SELECT year_month AS month, SUM(impressions_total) AS total_impressions 
+                FROM {self.current_table} 
+                GROUP BY year_month 
+                ORDER BY year_month;
+            """
         elif "quarterly" in user_query.lower():
-            return f"SELECT quarter AS quarter, SUM(impressions_total) AS total_impressions FROM {self.current_table} GROUP BY quarter ORDER BY quarter;"
+            return f"""
+                SELECT quarter AS quarter, SUM(impressions_total) AS total_impressions 
+                FROM {self.current_table} 
+                GROUP BY quarter 
+                ORDER BY quarter;
+            """
         else:
-            raise Exception("Unsupported query type. Try using 'monthly' or 'quarterly' in your query.")
+            raise Exception("Unsupported query type. Try specifying specific months or use 'monthly' or 'quarterly' in your query.")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
