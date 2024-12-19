@@ -37,6 +37,7 @@ class DataAnalyzer:
             original_columns = df.columns.tolist()
             df.columns = [
                 c.lower()
+                .strip()
                 .replace(' ', '_')
                 .replace('(', '')
                 .replace(')', '')
