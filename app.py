@@ -14,6 +14,10 @@ class DataAnalyzer:
     def __init__(self):
         if 'db_conn' not in st.session_state:
             st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+        else:
+            # Reset the connection to avoid stale state
+            st.session_state.db_conn.close()
+            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn = st.session_state.db_conn
         self.current_table = None
 
@@ -136,6 +140,9 @@ def main():
     selected_sheet = None
 
     if uploaded_file:
+        # Reinitialize the analyzer to reset the database connection for new files
+        st.session_state.analyzer = DataAnalyzer()
+
         if uploaded_file.name.endswith(('xls', 'xlsx')):
             excel_file = pd.ExcelFile(uploaded_file)
             sheet_names = excel_file.sheet_names
@@ -198,11 +205,3 @@ def main():
         st.markdown("""
         This app uses:
         - SQLite for data analysis
-        - Plotly for visualizations
-        - Streamlit for the UI
-
-        Upload any Excel or CSV file, and analyze it with natural language queries!
-        """)
-
-if __name__ == "__main__":
-    main()
