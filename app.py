@@ -58,7 +58,7 @@ def query_gpt(prompt: str) -> str:
     """
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",  # Use "gpt-4" or "gpt-3.5-turbo"
+            model="gpt-4",  # Use "gpt-3.5-turbo" if preferred
             messages=[
                 {"role": "system", "content": "You are a helpful assistant skilled at analyzing datasets."},
                 {"role": "user", "content": prompt}
