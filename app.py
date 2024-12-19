@@ -89,8 +89,12 @@ def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
     I have a dataset with the following columns: {column_names}.
     User query: '{query}'.
     Generate Python code to process the dataset stored in a DataFrame called 'df' to fulfill the query. 
-    Store the resulting DataFrame in a variable named 'result'. The code should directly filter, sort, or aggregate data as needed.
-    Do not use hardcoded column names. Base your logic on the provided column names dynamically.
+    The code should:
+    - Dynamically reference the column names from the provided dataset.
+    - Handle potential errors gracefully.
+    - Output the processed DataFrame into a variable named 'result'.
+    - Avoid hardcoding specific column names or data values.
+    Ensure the Python code is syntactically valid and concise.
     """
     gpt_response = query_gpt(prompt, model=model)
 
@@ -100,16 +104,22 @@ def analyze_query_with_gpt(df: pd.DataFrame, query: str, model="gpt-3.5-turbo") 
         exec(gpt_response, {}, local_context)
         result = local_context.get("result", None)
         if result is None or not isinstance(result, pd.DataFrame):
-            st.error("GPT did not generate a valid result.")
+            st.error("GPT did not generate a valid DataFrame.")
+            st.write("### GPT-Generated Code with Error")
+            st.code(gpt_response, language="python")
             return pd.DataFrame()
         return result
     except SyntaxError as e:
         st.error(f"Syntax error in GPT-generated code: {e}")
         logger.error(f"Syntax error: {e}")
+        st.write("### GPT-Generated Code with Error")
+        st.code(gpt_response, language="python")
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error executing GPT-generated logic: {e}")
         logger.error(f"Execution error: {e}")
+        st.write("### GPT-Generated Code with Error")
+        st.code(gpt_response, language="python")
         return pd.DataFrame()
 
 def main():
