@@ -97,19 +97,26 @@ class DataAnalyzer:
         cursor = self.conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
 
-        if "year_month" not in available_columns:
-            raise Exception("The column 'year_month' is missing. Ensure your data includes a valid 'date' column.")
+        # Handle specific queries dynamically
+        if "top 5 posts" in user_query.lower():
+            required_columns = ['impressions', 'post_title', 'posted_by', 'post_link']
+            missing_columns = [col for col in required_columns if col not in available_columns]
+            if missing_columns:
+                raise Exception(f"The following required columns are missing from your data: {', '.join(missing_columns)}")
 
-        # Generate SQL based on query type
-        if "november" in user_query.lower() and "october" in user_query.lower():
             return f"""
-                SELECT year_month AS month, SUM(impressions_total) AS total_impressions 
-                FROM {self.current_table} 
-                WHERE year_month IN ('2024-10', '2024-11') 
-                GROUP BY year_month 
-                ORDER BY year_month;
+                SELECT post_title, posted_by, post_link, impressions
+                FROM {self.current_table}
+                ORDER BY impressions DESC
+                LIMIT 5;
             """
-        elif "monthly" in user_query.lower():
+
+        if "year_month" not in available_columns and "date" not in available_columns:
+            if "monthly" in user_query.lower() or "quarterly" in user_query.lower():
+                raise Exception("The dataset does not contain 'year_month' or 'date' information for this analysis.")
+
+        # Default cases for queries like monthly or quarterly trends
+        if "monthly" in user_query.lower():
             return f"""
                 SELECT year_month AS month, SUM(impressions_total) AS total_impressions 
                 FROM {self.current_table} 
@@ -124,7 +131,7 @@ class DataAnalyzer:
                 ORDER BY quarter;
             """
         else:
-            raise Exception("Unsupported query type. Try specifying specific months or use 'monthly' or 'quarterly' in your query.")
+            raise Exception("Unsupported query type. Adjust your query or ensure the dataset contains required columns.")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
