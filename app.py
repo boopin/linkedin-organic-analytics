@@ -14,7 +14,7 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:')
         self.current_table = None
-        
+
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database"""
         try:
@@ -26,7 +26,7 @@ class DataAnalyzer:
                     excel_file = pd.ExcelFile(file)
                     sheet_name = excel_file.sheet_names[0]
                 df = pd.read_excel(file, sheet_name=sheet_name)
-            
+
             # Clean column names for SQL compatibility
             original_columns = df.columns.tolist()
             df.columns = [c.lower().replace(' ', '_').replace('(', '_').replace(')', '').replace('-', '_')[:50]
@@ -42,10 +42,10 @@ class DataAnalyzer:
 
             # Store table name
             self.current_table = 'data_table'
-            
+
             # Save to SQLite
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
-            
+
             # Get schema info
             cursor = self.conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
@@ -53,7 +53,7 @@ class DataAnalyzer:
         except Exception as e:
             logger.error(f"Error loading data: {str(e)}")
             return False, str(e)
-    
+
     def format_schema_info(self, schema_info) -> str:
         """Format schema information for display"""
         columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
@@ -64,7 +64,7 @@ class DataAnalyzer:
         try:
             # Generate SQL query
             sql_query = self.generate_sql(user_query, schema_info)
-            
+
             # Execute SQL and fetch results
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
@@ -77,15 +77,15 @@ class DataAnalyzer:
         prompt = f"""
         Given a database table with the following schema:
         {schema_info}
-        
+
         Generate a SQL query to answer this question: "{user_query}"
-        
+
         Requirements:
         - Use only the columns shown above
         - Return results that can be visualized
         - Use proper SQL syntax for SQLite
         - Return only the SQL query, no explanations
-        
+
         SQL Query:
         """
         # Mocking AI response for the purpose of local execution
@@ -98,7 +98,7 @@ class DataAnalyzer:
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
-    st.title("📊 AI-Powered Data Analyzer")
+    st.title("🔹 AI-Powered Data Analyzer")
     st.write("Upload your data and analyze it with your own queries!")
 
     # Initialize analyzer
@@ -114,12 +114,12 @@ def main():
             excel_file = pd.ExcelFile(uploaded_file)
             sheet_names = excel_file.sheet_names
             selected_sheet = st.selectbox("Select a sheet to analyze", sheet_names)
-        
+
         success, schema_info = st.session_state.analyzer.load_data(uploaded_file, sheet_name=selected_sheet)
-        
+
         if success:
             st.success("Data loaded successfully!")
-            
+
             with st.expander("View Data Schema"):
                 st.code(schema_info)
 
@@ -136,25 +136,29 @@ def main():
             )
 
             # Analyze button
-            if st.button("🔍 Analyze") and user_query:
-                try:
-                    with st.spinner("Analyzing your data..."):
-                        df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
+            analyze_button = st.button("🔍 Analyze")
 
-                    # Display results
-                    tab1, tab2 = st.tabs(["📈 Visualization", "🔍 Query"])
+            if analyze_button:
+                if not user_query:
+                    st.warning("Please enter a query before clicking Analyze.")
+                else:
+                    try:
+                        with st.spinner("Analyzing your data..."):
+                            df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
 
-                    with tab1:
-                        fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
-                        st.plotly_chart(fig, use_container_width=True)
+                        # Display results
+                        tab1, tab2 = st.tabs(["🔹 Visualization", "🔍 Query"])
 
-                    with tab2:
-                        st.code(sql_query, language='sql')
+                        with tab1:
+                            fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
+                            st.plotly_chart(fig, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Error during analysis: {str(e)}")
-            elif not user_query and st.button("🔍 Analyze"):
-                st.warning("Please enter a query before clicking Analyze.")
+                        with tab2:
+                            st.code(sql_query, language='sql')
+
+                    except Exception as e:
+                        st.error(f"Error during analysis: {str(e)}")
+
         else:
             st.error(f"Error loading data: {schema_info}")
 
