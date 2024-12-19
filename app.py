@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import sqlite3
+from typing import Tuple  # Add this import
 from datetime import datetime
 import logging
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
