@@ -31,8 +31,14 @@ class DataAnalyzer:
 
             # Clean column names for SQL compatibility
             original_columns = df.columns.tolist()
-            df.columns = [c.lower().replace(' ', '_').replace('(', '_').replace(')', '').replace('-', '_')[:50]
-                          for c in df.columns]
+            df.columns = [
+                c.lower()
+                .replace(' ', '_')
+                .replace('(', '')
+                .replace(')', '')
+                .replace('-', '_')
+                for c in df.columns
+            ]
             logger.info(f"Original columns: {original_columns}")
             logger.info(f"Cleaned columns: {df.columns.tolist()}")
 
