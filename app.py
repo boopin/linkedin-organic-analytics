@@ -93,7 +93,7 @@ class DataAnalyzer:
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
-            # Generate SQL query using LangChain and OpenAI
+            user_query = self.generate_monthly_filter(user_query)
             sql_query = self.generate_sql_with_langchain(user_query, schema_info)
 
             # Execute SQL and fetch results
@@ -107,6 +107,22 @@ class DataAnalyzer:
         except Exception as e:
             logger.error(f"Analysis error: {str(e)}")
             raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted and the necessary columns exist.")
+
+    def generate_monthly_filter(self, user_query: str) -> str:
+        """Map user-specified months to year_month values"""
+        month_mapping = {
+            "january": "01", "february": "02", "march": "03",
+            "april": "04", "may": "05", "june": "06",
+            "july": "07", "august": "08", "september": "09",
+            "october": "10", "november": "11", "december": "12"
+        }
+        for month_name, month_code in month_mapping.items():
+            if month_name in user_query.lower():
+                year = "2024"  # Default year if not specified
+                if "2023" in user_query:
+                    year = "2023"
+                user_query = user_query.replace(month_name.capitalize(), f"{year}-{month_code}")
+        return user_query
 
     def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
         """Generate SQL query using LangChain"""
