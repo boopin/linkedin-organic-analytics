@@ -58,15 +58,15 @@ class DataAnalyzer:
             # Process date column
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
-                if df['date'].isnull().all():
-                    logger.warning("The 'date' column contains no valid dates. Please check the uploaded file.")
-                    st.warning("The 'date' column in your file contains no valid dates. Please upload a file with properly formatted dates.")
-                else:
-                    # Add time-based aggregation columns
+                if not df['date'].isnull().all():
+                    # Add derived time-based columns
                     df['week'] = df['date'].dt.to_period('W-SUN').astype(str)  # e.g., '2024-01-07/2024-01-13'
                     df['year_month'] = df['date'].dt.to_period('M').astype(str)  # e.g., '2024-01'
                     df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)  # e.g., 'Q1 2024'
                     df['year'] = df['date'].dt.year.astype(str)  # e.g., '2024'
+                else:
+                    logger.warning("The 'date' column contains no valid dates. Please check the uploaded file.")
+                    st.warning("The 'date' column in your file contains no valid dates. Please upload a file with properly formatted dates.")
             else:
                 logger.warning("No 'date' column found in the uploaded data.")
                 st.warning("No 'date' column found in the uploaded data. Columns 'year_month', 'week', 'quarter', and 'year' cannot be generated.")
