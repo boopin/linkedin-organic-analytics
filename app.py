@@ -3,8 +3,6 @@ import pandas as pd
 import sqlite3
 from typing import Tuple
 import logging
-from datetime import datetime
-import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema import HumanMessage
@@ -18,7 +16,7 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = 'data_table'
-        self.llm = ChatOpenAI(model="gpt-3.5-turbo")  # Updated for chat-based model
+        self.llm = ChatOpenAI(model="gpt-3.5-turbo")
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and handle optional date-based processing."""
@@ -38,21 +36,7 @@ class DataAnalyzer:
                 for c in df.columns
             ]
 
-            # Optional: Process the date column if present
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')  # Parse dates
-                if not df['date'].isnull().all():
-                    # Compute derived time-based fields
-                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
-                    df['year_month'] = df['date'].dt.to_period('M').astype(str)
-                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
-                    df['year'] = df['date'].dt.year.astype(str)
-                else:
-                    st.warning("The 'date' column contains no valid dates. Time-based fields will not be generated.")
-            else:
-                st.warning("No 'date' column detected. Time-based analyses will be unavailable for this sheet.")
-
-            # Drop the existing table if it exists
+            # Drop existing table
             cursor = self.conn.cursor()
             cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
 
@@ -81,11 +65,11 @@ class DataAnalyzer:
         prompt_template = ChatPromptTemplate.from_messages([
             HumanMessage(
                 content=(
-                    "You are an SQL expert. Based on the user's request, generate a valid SQL SELECT query. "
+                    "You are an SQL expert. Generate a valid SQL SELECT query based on the user's request. "
                     "The table is named 'data_table' and has the following columns: {columns}. "
                     "User's request: {user_query}. "
-                    "The query should start with SELECT, include valid SQL syntax, and must return a table of results."
-                    " If filtering by a month, ensure you filter correctly by the month name or number."
+                    "The query must start with SELECT, use valid SQL syntax, and return the desired table. "
+                    "If ranking is required (e.g., top 5), use the ORDER BY clause."
                 )
             )
         ])
@@ -120,12 +104,11 @@ class DataAnalyzer:
         except Exception as e:
             logger.error(f"Analysis error: {e}")
 
-            # Provide fallback query example
+            # Provide fallback query for top posts
             fallback_query = (
-                "SELECT strftime('%m', date) AS month, SUM(impressions_total) AS total_impressions "
+                "SELECT post_title, posted_by, post_type, post_link, likes "
                 "FROM data_table "
-                "WHERE strftime('%m', date) IN ('10', '11') "
-                "GROUP BY month;"
+                "ORDER BY likes DESC LIMIT 5;"
             )
             logger.info(f"Using fallback query: {fallback_query}")
 
@@ -139,7 +122,6 @@ class DataAnalyzer:
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("📊 AI-Powered Data Analyzer")
-    st.write("Upload your dataset and analyze it with AI-driven insights!")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
@@ -161,7 +143,7 @@ def main():
 
             user_query = st.text_area(
                 "Enter your query about the data",
-                placeholder="e.g., 'Compare Q3 and Q2 impressions' or 'Monthly trends for 2024'."
+                placeholder="e.g., 'Generate a table showcasing top 5 posts by likes.'"
             )
             if st.button("Analyze"):
                 try:
@@ -174,26 +156,10 @@ def main():
 
                     # Display SQL Query
                     st.code(sql_query, language='sql')
-
-                    # Visualization
-                    if "month" in df_result.columns or "quarter" in df_result.columns:
-                        x_axis = "month" if "month" in df_result.columns else "quarter"
-                        fig = px.bar(df_result, x=x_axis, y=df_result.columns[1], title="Comparison Results")
-                    else:
-                        fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
-                    st.plotly_chart(fig)
                 except Exception as e:
                     st.error(str(e))
         else:
             st.error(f"Error loading data: {schema_info}")
-
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.markdown("""
-        - Supports time-based analyses (weekly, monthly, quarterly, yearly).
-        - Dynamically generates insights from user queries using LangChain and ChatOpenAI.
-        - Provides interactive visualizations for key metrics.
-        """)
 
 if __name__ == "__main__":
     main()
