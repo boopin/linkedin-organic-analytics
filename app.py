@@ -26,59 +26,48 @@ class DataAnalyzer:
         self.llm = OpenAI(temperature=0)  # LangChain LLM setup
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from uploaded file into SQLite database"""
+        """Load data from uploaded file into SQLite database and compute derived columns."""
         try:
+            # Load data
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file)
             else:
-                # Load specific sheet or first sheet by default
+                excel_file = pd.ExcelFile(file)
                 if sheet_name is None:
-                    excel_file = pd.ExcelFile(file)
                     sheet_name = excel_file.sheet_names[0]
                 df = pd.read_excel(file, sheet_name=sheet_name)
 
-            # Clean column names for SQL compatibility
-            original_columns = df.columns.tolist()
+            # Clean column names
             df.columns = [
-                c.lower()
-                .strip()
-                .replace(' ', '_')
-                .replace('(', '')
-                .replace(')', '')
-                .replace('-', '_')
+                c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
                 for c in df.columns
             ]
-            logger.info(f"Original columns: {original_columns}")
-            logger.info(f"Normalized columns: {df.columns.tolist()}")
 
-            # Process date column
+            # Check and process the date column
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
                 if not df['date'].isnull().all():
-                    # Add derived time-based columns
-                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)  # e.g., '2024-01-07/2024-01-13'
-                    df['year_month'] = df['date'].dt.to_period('M').astype(str)  # e.g., '2024-01'
-                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)  # e.g., 'Q1 2024'
-                    df['year'] = df['date'].dt.year.astype(str)  # e.g., '2024'
+                    # Automatically compute derived time-based fields
+                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
+                    df['year_month'] = df['date'].dt.to_period('M').astype(str)
+                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
+                    df['year'] = df['date'].dt.year.astype(str)
                 else:
-                    logger.warning("The 'date' column contains no valid dates. Please check the uploaded file.")
-                    st.warning("The 'date' column in your file contains no valid dates. Please upload a file with properly formatted dates.")
+                    st.warning("The 'date' column contains no valid dates. Derived fields will not be generated.")
             else:
-                logger.warning("No 'date' column found in the uploaded data.")
-                st.warning("No 'date' column found in the uploaded data. Columns 'year_month', 'week', 'quarter', and 'year' cannot be generated.")
+                st.warning("No 'date' column found in the uploaded data. Derived fields cannot be generated.")
 
-            # Store table name
+            # Save the processed dataset into SQLite
             self.current_table = 'data_table'
-
-            # Save to SQLite (replace existing table)
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
-            # Get schema info
+            # Return schema information for user feedback
             cursor = self.conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             return True, self.format_schema_info(schema_info)
+
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
+            logger.error(f"Error loading data: {e}")
             return False, str(e)
 
     def format_schema_info(self, schema_info) -> str:
