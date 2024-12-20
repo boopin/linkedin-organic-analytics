@@ -79,10 +79,10 @@ class DataAnalyzer:
         prompt_template = ChatPromptTemplate.from_messages([
             HumanMessage(
                 content=(
-                    "You are an expert SQL query generator. Based on the user's request, "
-                    "generate a valid SQL SELECT query. The table is named 'data_table' and has the following columns: {columns}. "
+                    "You are an SQL expert. Based on the user's request, generate a valid SQL SELECT query. "
+                    "The table is named 'data_table' and has the following columns: {columns}. "
                     "User's request: {user_query}. "
-                    "Ensure the query is syntactically correct and meaningful."
+                    "Ensure the query starts with SELECT, uses valid SQL syntax, and is structured correctly."
                 )
             )
         ])
@@ -90,7 +90,12 @@ class DataAnalyzer:
         # Generate SQL query using LangChain
         chain = LLMChain(llm=self.llm, prompt=prompt_template)
         sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)}).strip()
+
+        # Log and validate query
         logger.info(f"Generated SQL query: {sql_query}")
+        if not sql_query.lower().startswith("select"):
+            raise ValueError("Generated query is not a valid SELECT statement.")
+
         return sql_query
 
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
@@ -99,13 +104,10 @@ class DataAnalyzer:
             # Generate the SQL query using LangChain
             sql_query = self.generate_sql_with_langchain(user_query)
             
-            # Ensure the generated query is valid before execution
-            if not sql_query.strip().lower().startswith("select"):
-                raise ValueError("Generated query is not a valid SELECT statement.")
-
             # Execute the query
             df_result = pd.read_sql_query(sql_query, self.conn)
 
+            # Check for empty results
             if df_result.empty:
                 raise ValueError("The query returned no data. Ensure the dataset has relevant information.")
 
