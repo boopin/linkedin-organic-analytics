@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import sqlite3
 from typing import Tuple
-from datetime import datetime
 import logging
 import openai
 from langchain.prompts import PromptTemplate
@@ -40,7 +39,6 @@ class DataAnalyzer:
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and compute derived columns."""
         try:
-            logger.info("Loading data...")
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file)
             else:
@@ -55,23 +53,7 @@ class DataAnalyzer:
                 for c in df.columns
             ]
 
-            # Check if 'date' column exists
-            if 'date' in df.columns:
-                logger.info("Processing date column...")
-                df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
-                if not df['date'].isnull().all():
-                    # Compute derived time-based fields
-                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
-                    df['year_month'] = df['date'].dt.to_period('M').astype(str)
-                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
-                    df['year'] = df['date'].dt.year.astype(str)
-                else:
-                    raise ValueError("The 'date' column contains no valid dates. Please check the dataset format.")
-            else:
-                logger.warning("The dataset is missing a 'date' column. Time-based analyses will be unavailable.")
-
             logger.info("Saving processed data to SQLite...")
-            # Save the processed dataset into SQLite
             self.current_table = 'data_table'
             conn = self.get_connection()
             df.to_sql(self.current_table, conn, index=False, if_exists='replace')
@@ -79,7 +61,6 @@ class DataAnalyzer:
             # Return schema information for user feedback
             cursor = conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
-            logger.info("Data loaded successfully.")
             return True, self.format_schema_info(schema_info)
 
         except Exception as e:
@@ -91,35 +72,20 @@ class DataAnalyzer:
         columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
         return "Table columns:\n" + "\n".join(columns)
 
-    def get_table_columns(self) -> list:
-        """Fetch the list of columns from the current table"""
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
-            logger.info(f"Fetched table columns: {columns}")
-            return columns
-        except Exception as e:
-            logger.error(f"Error fetching table columns: {str(e)}")
-            return []
-
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
             if not self.current_table:
                 raise Exception("No data loaded. Please upload a dataset first.")
-
+            
             sql_query = self.generate_sql_with_langchain(user_query, schema_info)
-            logger.info(f"Executing SQL query: {sql_query}")
             conn = self.get_connection()
             df_result = pd.read_sql_query(sql_query, conn)
 
-            # Verify if the query returned any data
             if df_result.empty:
-                raise Exception("The query returned no data. Ensure the dataset has relevant data for the requested period.")
-
-            logger.info("Analysis completed successfully.")
+                raise Exception("The query returned no data. Ensure the dataset has relevant data.")
             return df_result, sql_query
+
         except Exception as e:
             logger.error(f"Analysis error: {str(e)}")
             raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted.")
@@ -137,38 +103,38 @@ class DataAnalyzer:
         sql_query = chain.run(user_query=user_query, columns=", ".join(self.get_table_columns()))
         return sql_query
 
-
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("🔹 AI-Powered Data Analyzer")
     st.write("Upload your data and analyze it with your own queries!")
 
-    # Initialize analyzer
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
-    # File upload
     uploaded_file = st.file_uploader("Upload your data (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
+    selected_sheet = None
 
     if uploaded_file:
-        success, schema_info = st.session_state.analyzer.load_data(uploaded_file)
+        analyzer = st.session_state.analyzer
+        if uploaded_file.name.endswith(('xls', 'xlsx')):
+            excel_file = pd.ExcelFile(uploaded_file)
+            sheet_names = excel_file.sheet_names
+            selected_sheet = st.selectbox("Select a sheet to analyze", sheet_names)
 
+        success, schema_info = analyzer.load_data(uploaded_file, sheet_name=selected_sheet)
         if success:
             st.success("Data loaded successfully!")
-            with st.expander("View Data Schema"):
-                st.code(schema_info)
+            st.code(schema_info)
 
-            # Input for user query
             user_query = st.text_area("Enter your query about the data", height=100)
             if st.button("Analyze"):
                 try:
-                    df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
-                    st.write("### Query Result")
+                    df_result, sql_query = analyzer.analyze(user_query, schema_info)
                     st.write(df_result)
                 except Exception as e:
                     st.error(str(e))
         else:
-            st.error("Failed to load the data. Check the file format and content.")
+            st.error("Failed to load the data.")
 
 if __name__ == "__main__":
     main()
