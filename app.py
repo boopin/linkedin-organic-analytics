@@ -186,6 +186,67 @@ def main():
                 height=100
             )
 
+            # Quick Analysis Options
+            st.sidebar.header("Quick Analysis")
+            metric = st.sidebar.selectbox("Select Metric", ["impressions_total", "clicks_total", "engagement_rate_total"])
+            analysis_type = st.sidebar.selectbox("Select Analysis Type", ["Monthly", "Quarterly", "Yearly", "Weekly"])
+            compare = st.sidebar.checkbox("Compare Periods?")
+            period1 = None
+            period2 = None
+            if compare:
+                period1 = st.sidebar.text_input("Enter Period 1 (e.g., Q3 2024, 2024-10)")
+                period2 = st.sidebar.text_input("Enter Period 2 (e.g., Q4 2024, 2024-11)")
+            run_analysis = st.sidebar.button("Run Quick Analysis")
+
+            if run_analysis:
+                if analysis_type == "Monthly":
+                    sql_query = f"""
+                    SELECT year_month, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY year_month
+                    ORDER BY year_month;
+                    """
+                elif analysis_type == "Quarterly":
+                    sql_query = f"""
+                    SELECT quarter, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY quarter
+                    ORDER BY quarter;
+                    """
+                elif analysis_type == "Yearly":
+                    sql_query = f"""
+                    SELECT year, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY year
+                    ORDER BY year;
+                    """
+                elif analysis_type == "Weekly":
+                    sql_query = f"""
+                    SELECT week, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY week
+                    ORDER BY week;
+                    """
+                if compare and period1 and period2:
+                    sql_query = f"""
+                    SELECT {analysis_type.lower()}, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    WHERE {analysis_type.lower()} IN ('{period1}', '{period2}')
+                    GROUP BY {analysis_type.lower()};
+                    """
+                try:
+                    df_result = pd.read_sql_query(sql_query, st.session_state.analyzer.conn)
+                    st.write("### Quick Analysis Results")
+                    st.dataframe(df_result)
+
+                    # Chart Visualization
+                    st.write("### Chart Visualization")
+                    fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Error during analysis: {e}")
+
             # Analyze button
             analyze_button = st.button("🔍 Analyze")
 
