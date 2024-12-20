@@ -62,16 +62,19 @@ class DataAnalyzer:
         # Create the prompt for GPT-4
         prompt = (
             f"The table is named 'data_table' and has the following columns: {', '.join(available_columns)}. "
-            f"Based on the user's request, generate a valid SQL SELECT query. The query should start with SELECT, "
-            f"use valid SQL syntax, and return the desired result. Ensure the query matches the user's intent: {user_query}."
+            f"Based on the user's request, generate a valid SQL SELECT query. "
+            f"The query should start with SELECT, use valid SQL syntax, and filter correctly by month and year. "
+            f"Ensure the query matches the user's intent: {user_query}."
         )
 
         # Use GPT-4 to generate the query
         response = self.llm([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
 
-        # Log and validate the query
+        # Log the generated query
         logger.info(f"Generated SQL query: {sql_query}")
+
+        # Validate the query
         if not sql_query.lower().startswith("select"):
             raise ValueError("Generated query is not a valid SELECT statement.")
 
@@ -83,7 +86,8 @@ class DataAnalyzer:
             # Generate the SQL query using GPT-4
             sql_query = self.generate_sql_with_gpt4(user_query)
 
-            # Execute the query
+            # Log and execute the query
+            logger.info(f"Executing SQL query: {sql_query}")
             df_result = pd.read_sql_query(sql_query, self.conn)
 
             # Check for empty results
@@ -120,7 +124,7 @@ def main():
 
             user_query = st.text_area(
                 "Enter your query about the data",
-                placeholder="e.g., 'Generate a table showcasing top 5 posts by likes.'"
+                placeholder="e.g., 'Can you show me monthly total impressions for November 2024 vs October 2024 in a table?'"
             )
             if st.button("Analyze"):
                 try:
