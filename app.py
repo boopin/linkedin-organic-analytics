@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 from typing import Tuple
 import logging
-from langchain.chat_models import ChatOpenAI
+from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
 # Configure logging
@@ -46,10 +46,7 @@ class DataAnalyzer:
         try:
             # Preprocess the dataset
             processed_df = self.preprocess_data(df)
-
-            # Log cleaned column names and data types
-            logger.info(f"Cleaned columns: {processed_df.columns}")
-            logger.info(f"Column data types:\n{processed_df.dtypes}")
+            logger.info(f"Dataset after preprocessing: {processed_df.head()}")
 
             # Drop existing table
             cursor = self.conn.cursor()
@@ -57,6 +54,7 @@ class DataAnalyzer:
 
             # Save the processed dataset into SQLite
             processed_df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+            logger.info("Dataset loaded into SQLite successfully.")
 
             # Return schema information for user feedback
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
@@ -70,50 +68,95 @@ class DataAnalyzer:
         """Format schema information for display."""
         return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
-    # Other methods for building prompts, querying GPT-4, and analysis remain unchanged...
+    def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+        """Perform analysis based on user query."""
+        try:
+            logger.info(f"User query: {user_query}")
+
+            # Extract the requested metric from the query
+            metric = self.extract_metric_from_query(user_query, df)
+            logger.info(f"Extracted metric: {metric}")
+
+            # Generate the SQL query using GPT-4
+            sql_query = self.generate_sql_with_gpt4(user_query, df)
+            logger.info(f"Generated SQL query: {sql_query}")
+
+            # Execute the query
+            df_result = pd.read_sql_query(sql_query, self.conn)
+            logger.info(f"Query execution result: {df_result.head()}")
+
+            # Check for empty results
+            if df_result.empty:
+                raise ValueError(f"The query returned no data. Ensure the dataset has valid entries for '{metric}'.")
+
+            return df_result, sql_query
+        except Exception as e:
+            logger.error(f"Analysis error: {e}")
+
+            # Provide a fallback query using the extracted metric
+            fallback_query = (
+                f"SELECT post_title, post_link, post_type, {metric} "
+                f"FROM {self.current_table} "
+                f"ORDER BY {metric} DESC LIMIT 5;"
+            )
+            logger.info(f"Using fallback query: {fallback_query}")
+
+            try:
+                df_result = pd.read_sql_query(fallback_query, self.conn)
+                logger.info(f"Fallback query result: {df_result.head()}")
+                return df_result, fallback_query
+            except Exception as fallback_error:
+                logger.error(f"Fallback query also failed: {fallback_error}")
+                raise Exception("Analysis failed: Both primary and fallback queries failed.")
+
+    def extract_metric_from_query(self, user_query: str, df: pd.DataFrame) -> str:
+        """Extract the ranking metric from the user's query."""
+        available_columns = [col.lower() for col in df.columns]
+        query_keywords = user_query.lower().split()
+
+        for keyword in query_keywords:
+            if keyword in available_columns:
+                return keyword
+
+        return 'clicks'
+
+    def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
+        """Generate SQL query dynamically using GPT-4."""
+        schema = self.extract_schema_and_sample(df)
+        metric = self.extract_metric_from_query(user_query, df)
+        prompt = (
+            f"You are an expert in data analysis. Based on the following dataset schema and sample data, "
+            f"generate a valid SQL query for a SQLite database that matches the user's intent.\n\n"
+            f"{schema}\n\nUser Query: {user_query}\n"
+        )
+        response = self.llm([HumanMessage(content=prompt)])
+        sql_query = response.content.strip()
+
+        if not sql_query.lower().startswith("select"):
+            raise ValueError("Generated query is not a valid SELECT statement.")
+
+        return sql_query
 
 def main():
-    st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("📊 AI-Powered Data Analyzer")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload your data (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
-    selected_sheet = None
-
     if uploaded_file:
-        try:
-            # Load dataset into DataFrame
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
-            else:
-                excel_file = pd.ExcelFile(uploaded_file)
-                selected_sheet = st.selectbox("Select a sheet to analyze", excel_file.sheet_names)
-                df = pd.read_excel(uploaded_file, sheet_name=selected_sheet)
+        df = pd.read_excel(uploaded_file)
+        success, schema_info = st.session_state.analyzer.load_data(df)
 
-            # Load data into SQLite and analyze
-            success, schema_info = st.session_state.analyzer.load_data(df)
-            if success:
-                st.success("Data loaded successfully!")
-                with st.expander("View Data Schema"):
-                    st.code(schema_info)
-
-                user_query = st.text_area(
-                    "Enter your query about the data",
-                    placeholder="e.g., 'Show me total impressions by date.'"
-                )
-                if st.button("Analyze"):
-                    try:
-                        with st.spinner("Analyzing your data..."):
-                            # Analysis logic here...
-                            pass
-                    except Exception as e:
-                        st.error(str(e))
-            else:
-                st.error("Error loading dataset into SQLite.")
-        except Exception as e:
-            st.error(f"Error processing uploaded file: {str(e)}")
+        if success:
+            st.success("Data loaded successfully!")
+            user_query = st.text_area("Enter your query about the data", "")
+            if st.button("Analyze"):
+                try:
+                    result, query = st.session_state.analyzer.analyze(user_query, df)
+                    st.write(result)
+                except Exception as e:
+                    st.error(str(e))
 
 if __name__ == "__main__":
     main()
