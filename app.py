@@ -45,17 +45,18 @@ class DataAnalyzer:
 
             # Check and process the date column
             if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                # Parse date with MM/DD/YYYY format
+                df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
                 if not df['date'].isnull().all():
-                    # Automatically compute derived time-based fields
+                    # Compute derived time-based fields
                     df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
                     df['year_month'] = df['date'].dt.to_period('M').astype(str)
                     df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
                     df['year'] = df['date'].dt.year.astype(str)
                 else:
-                    st.warning("The 'date' column contains no valid dates. Derived fields will not be generated.")
+                    raise ValueError("The 'date' column contains no valid dates. Please check the dataset format.")
             else:
-                st.warning("No 'date' column found in the uploaded data. Derived fields cannot be generated.")
+                raise ValueError("The dataset is missing a 'date' column.")
 
             # Save the processed dataset into SQLite
             self.current_table = 'data_table'
