@@ -107,12 +107,17 @@ class DataAnalyzer:
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
         logger.info(f"Available columns in the table: {available_columns}")
 
+        # Map user-specified columns to actual columns in the database
+        column_mapping = {col.replace('_', ' '): col for col in available_columns}
+        logger.info(f"Column mapping: {column_mapping}")
+
         # LangChain prompt for SQL generation
         prompt_template = PromptTemplate(
             input_variables=["user_query", "columns"],
             template=(
                 "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
                 "The table is named '{table_name}' and has the following columns: {columns}. "
+                "Use the actual column names when writing the query. "
                 "User request: '{user_query}'."
             ),
         )
@@ -186,27 +191,3 @@ def main():
                             with tab1:
                                 fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
                                 st.plotly_chart(fig, use_container_width=True)
-
-                            with tab2:
-                                st.code(sql_query, language='sql')
-
-                    except Exception as e:
-                        st.error(f"Error during analysis: {str(e)}")
-        else:
-            st.error(f"Error loading data: {schema_info}")
-
-    # Sidebar
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.markdown("""
-        This app uses:
-        - SQLite for data analysis
-        - OpenAI and LangChain for natural language to SQL translation
-        - Plotly for visualizations
-        - Streamlit for the UI
-
-        Upload any Excel or CSV file, and analyze it with natural language queries!
-        """)
-
-if __name__ == "__main__":
-    main()
