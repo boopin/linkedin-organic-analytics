@@ -86,6 +86,16 @@ class DataAnalyzer:
         columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
         return "Table columns:\n" + "\n".join(columns)
 
+    def get_table_columns(self) -> list:
+        """Fetch the list of columns from the current table"""
+        try:
+            cursor = self.conn.cursor()
+            columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+            return columns
+        except Exception as e:
+            logger.error(f"Error fetching table columns: {str(e)}")
+            return []
+
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
@@ -200,7 +210,11 @@ def main():
 
             # Quick Analysis Options
             st.sidebar.header("Quick Analysis")
-            metric = st.sidebar.selectbox("Select Metric", ["impressions_total", "clicks_total", "engagement_rate_total"])
+
+            # Dynamically populate metrics based on selected sheet
+            table_columns = st.session_state.analyzer.get_table_columns()
+            metric = st.sidebar.selectbox("Select Metric", table_columns if table_columns else ["impressions_total", "clicks_total", "engagement_rate_total"])
+            
             analysis_type = st.sidebar.selectbox("Select Analysis Type", ["Monthly", "Quarterly", "Yearly", "Weekly"])
             compare = st.sidebar.checkbox("Compare Periods?")
             period1 = None
