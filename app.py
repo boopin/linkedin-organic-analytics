@@ -5,6 +5,9 @@ from typing import Tuple
 import logging
 from datetime import datetime
 import plotly.express as px
+from langchain.llms import OpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,9 +17,10 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = None
+        self.llm = OpenAI(model="text-davinci-003")  # Use your OpenAI key here
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from the uploaded file into SQLite database and compute derived columns."""
+        """Load data from uploaded file into SQLite database and compute derived columns."""
         try:
             # Load data
             if file.name.endswith('.csv'):
@@ -64,22 +68,32 @@ class DataAnalyzer:
         """Format schema information for display."""
         return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
+    def generate_sql_with_langchain(self, user_query: str) -> str:
+        """Generate SQL query dynamically using LangChain."""
+        cursor = self.conn.cursor()
+        available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+        logger.info(f"Available columns: {available_columns}")
+
+        # Define LangChain prompt template
+        prompt_template = PromptTemplate(
+            input_variables=["user_query", "columns"],
+            template=(
+                "Generate a valid SQL query based on the following user request: {user_query}. "
+                "The table is named 'data_table' and has the following columns: {columns}. "
+                "Ensure the query returns meaningful results even if some fields are missing."
+            ),
+        )
+
+        # Generate SQL query using LangChain
+        chain = LLMChain(llm=self.llm, prompt=prompt_template)
+        sql_query = chain.run(user_query=user_query, columns=", ".join(available_columns))
+        logger.info(f"Generated SQL query: {sql_query}")
+        return sql_query
+
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
         """Perform analysis based on user query."""
         try:
-            cursor = self.conn.cursor()
-            # Validate quarter data existence
-            available_quarters = [row[0] for row in cursor.execute("SELECT DISTINCT quarter FROM data_table").fetchall()]
-            if not set(['Q2 2024', 'Q3 2024']).issubset(set(available_quarters)):
-                raise ValueError("No data available for Q2 2024 or Q3 2024. Please check your dataset.")
-
-            # Generate SQL query for quarterly comparison
-            sql_query = """
-                SELECT quarter, SUM(impressions_total) AS total_impressions
-                FROM data_table
-                WHERE quarter IN ('Q2 2024', 'Q3 2024')
-                GROUP BY quarter;
-            """
+            sql_query = self.generate_sql_with_langchain(user_query)
             df_result = pd.read_sql_query(sql_query, self.conn)
 
             if df_result.empty:
@@ -93,7 +107,7 @@ class DataAnalyzer:
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("📊 AI-Powered Data Analyzer")
-    st.write("Upload your dataset and analyze it with time-based insights!")
+    st.write("Upload your dataset and analyze it with AI-driven insights!")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
@@ -121,12 +135,19 @@ def main():
                 try:
                     with st.spinner("Analyzing your data..."):
                         df_result, sql_query = st.session_state.analyzer.analyze(user_query)
+
+                    # Display Results
                     st.write("### Analysis Results")
                     st.dataframe(df_result)
+
+                    # Display SQL Query
                     st.code(sql_query, language='sql')
 
                     # Visualization
-                    fig = px.bar(df_result, x='quarter', y='total_impressions', title="Quarterly Comparison")
+                    if "quarter" in df_result.columns:
+                        fig = px.bar(df_result, x='quarter', y=df_result.columns[1], title="Quarterly Comparison")
+                    else:
+                        fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Result")
                     st.plotly_chart(fig)
                 except Exception as e:
                     st.error(str(e))
@@ -137,7 +158,8 @@ def main():
         st.header("ℹ️ About")
         st.markdown("""
         - Supports time-based analyses (weekly, monthly, quarterly, yearly).
-        - Dynamically generates insights from user queries.
+        - Dynamically generates insights from user queries using LangChain and OpenAI.
+        - Provides interactive visualizations for key metrics.
         """)
 
 if __name__ == "__main__":
