@@ -20,7 +20,7 @@ class DataAnalyzer:
         self.llm = OpenAI(model="text-davinci-003")  # Use your OpenAI key here
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from uploaded file into SQLite database and compute derived columns."""
+        """Load data from uploaded file into SQLite database and handle optional date-based processing."""
         try:
             # Load data
             if file.name.endswith('.csv'):
@@ -37,7 +37,7 @@ class DataAnalyzer:
                 for c in df.columns
             ]
 
-            # Check and process the date column
+            # Optional: Process the date column if present
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')  # Parse dates
                 if not df['date'].isnull().all():
@@ -47,9 +47,9 @@ class DataAnalyzer:
                     df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
                     df['year'] = df['date'].dt.year.astype(str)
                 else:
-                    raise ValueError("The 'date' column contains no valid dates. Please check the dataset.")
+                    st.warning("The 'date' column contains no valid dates. Time-based fields will not be generated.")
             else:
-                raise ValueError("The dataset is missing a 'date' column.")
+                st.warning("No 'date' column detected. Time-based analyses will be unavailable for this sheet.")
 
             # Save the processed dataset into SQLite
             self.current_table = 'data_table'
