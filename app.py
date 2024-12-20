@@ -19,12 +19,23 @@ openai.api_key = "your-openai-api-key"  # Replace with your OpenAI API key
 
 class DataAnalyzer:
     def __init__(self):
-        if 'db_conn' not in st.session_state:
-            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
-        self.conn = st.session_state.db_conn
+        self.conn = None
         self.current_table = None
         self.llm = OpenAI(temperature=0)  # LangChain LLM setup
         logger.info("DataAnalyzer initialized.")
+
+    def get_connection(self):
+        """Ensure the database connection is open and return it."""
+        if self.conn is None or not self.conn:
+            self.conn = sqlite3.connect(':memory:', check_same_thread=False)
+        return self.conn
+
+    def close_connection(self):
+        """Close the database connection to avoid memory leaks."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+            logger.info("Database connection closed.")
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and compute derived columns."""
@@ -44,7 +55,7 @@ class DataAnalyzer:
                 for c in df.columns
             ]
 
-            # Check and process the date column
+            # Check if 'date' column exists
             if 'date' in df.columns:
                 logger.info("Processing date column...")
                 df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
@@ -59,20 +70,23 @@ class DataAnalyzer:
                 else:
                     raise ValueError("The 'date' column contains no valid dates. Please check the dataset format.")
             else:
-                raise ValueError("The dataset is missing a 'date' column.")
+                logger.warning("The dataset is missing a 'date' column. Time-based analyses will be unavailable.")
 
             logger.info("Saving processed data to SQLite...")
             # Save the processed dataset into SQLite
             self.current_table = 'data_table'
-            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+            conn = self.get_connection()
+            df.to_sql(self.current_table, conn, index=False, if_exists='replace')
 
-            # Validate derived columns
-            cursor = self.conn.cursor()
-            logger.info("Validating derived columns...")
-            distinct_quarters = cursor.execute(f"SELECT DISTINCT quarter FROM {self.current_table}").fetchall()
-            logger.info(f"Distinct quarters in the data: {distinct_quarters}")
+            # Validate derived columns if 'date' exists
+            if 'date' in df.columns:
+                cursor = conn.cursor()
+                logger.info("Validating derived columns...")
+                distinct_quarters = cursor.execute(f"SELECT DISTINCT quarter FROM {self.current_table}").fetchall()
+                logger.info(f"Distinct quarters in the data: {distinct_quarters}")
 
             # Return schema information for user feedback
+            cursor = conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             logger.info("Data loaded successfully.")
             return True, self.format_schema_info(schema_info)
@@ -89,13 +103,28 @@ class DataAnalyzer:
     def get_table_columns(self) -> list:
         """Fetch the list of columns from the current table"""
         try:
-            cursor = self.conn.cursor()
+            conn = self.get_connection()
+            cursor = conn.cursor()
             columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
             logger.info(f"Fetched table columns: {columns}")
             return columns
         except Exception as e:
             logger.error(f"Error fetching table columns: {str(e)}")
             return []
+
+    def validate_data_availability(self, period: str, column: str) -> bool:
+        """Validate if data is available for a specific period and column."""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            query = f"SELECT COUNT(*) FROM {self.current_table} WHERE {column} = ?"
+            cursor.execute(query, (period,))
+            count = cursor.fetchone()[0]
+            logger.info(f"Data availability check for {period}: {count} rows found.")
+            return count > 0
+        except Exception as e:
+            logger.error(f"Error validating data availability: {str(e)}")
+            return False
 
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
@@ -117,7 +146,8 @@ class DataAnalyzer:
             sql_query = self.generate_sql_with_langchain(user_query, schema_info)
 
             logger.info(f"Executing SQL query: {sql_query}")
-            df_result = pd.read_sql_query(sql_query, self.conn)
+            conn = self.get_connection()
+            df_result = pd.read_sql_query(sql_query, conn)
 
             # Verify if the query returned any data
             if df_result.empty:
@@ -152,7 +182,8 @@ class DataAnalyzer:
     def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
         """Generate SQL query using LangChain"""
         # Fetch available columns
-        cursor = self.conn.cursor()
+        conn = self.get_connection()
+        cursor = conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
         logger.info(f"Available columns in the table: {available_columns}")
 
@@ -222,7 +253,8 @@ def main():
                 st.code(schema_info)
 
             with st.expander("View Data Columns"):
-                cursor = st.session_state.analyzer.conn.cursor()
+                conn = st.session_state.analyzer.get_connection()
+                cursor = conn.cursor()
                 columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({st.session_state.analyzer.current_table})").fetchall()]
                 st.write(columns)
 
@@ -233,81 +265,6 @@ def main():
                 height=100
             )
 
-            # Quick Analysis Options
-            st.sidebar.header("Quick Analysis")
-
-            # Dynamically populate metrics based on selected sheet
-            table_columns = st.session_state.analyzer.get_table_columns()
-            metric = st.sidebar.selectbox("Select Metric", table_columns if table_columns else ["impressions_total", "clicks_total", "engagement_rate_total"])
-            
-            analysis_type = st.sidebar.selectbox("Select Analysis Type", ["Monthly", "Quarterly", "Yearly", "Weekly"])
-            compare = st.sidebar.checkbox("Compare Periods?")
-            period1 = None
-            period2 = None
-            if compare:
-                period1 = st.sidebar.text_input("Enter Period 1 (e.g., Q3 2024, 2024-10)")
-                period2 = st.sidebar.text_input("Enter Period 2 (e.g., Q4 2024, 2024-11)")
-            run_analysis = st.sidebar.button("Run Quick Analysis")
-
-            if run_analysis:
-                logger.info("Running quick analysis...")
-                if analysis_type == "Monthly":
-                    sql_query = f"""
-                    SELECT year_month, SUM({metric}) AS total_{metric}
-                    FROM data_table
-                    GROUP BY year_month
-                    ORDER BY year_month;
-                    """
-                elif analysis_type == "Quarterly":
-                    sql_query = f"""
-                    SELECT 
-                        CASE 
-                            WHEN strftime('%m', date) BETWEEN '01' AND '03' THEN 'Q1'
-                            WHEN strftime('%m', date) BETWEEN '04' AND '06' THEN 'Q2'
-                            WHEN strftime('%m', date) BETWEEN '07' AND '09' THEN 'Q3'
-                            WHEN strftime('%m', date) BETWEEN '10' AND '12' THEN 'Q4'
-                        END || ' ' || strftime('%Y', date) AS quarter, 
-                        SUM({metric}) AS total_{metric}
-                    FROM data_table
-                    GROUP BY quarter
-                    ORDER BY quarter;
-                    """
-                elif analysis_type == "Yearly":
-                    sql_query = f"""
-                    SELECT year, SUM({metric}) AS total_{metric}
-                    FROM data_table
-                    GROUP BY year
-                    ORDER BY year;
-                    """
-                elif analysis_type == "Weekly":
-                    sql_query = f"""
-                    SELECT week_start, SUM({metric}) AS total_{metric}
-                    FROM data_table
-                    GROUP BY week_start
-                    ORDER BY week_start;
-                    """
-                if compare and period1 and period2:
-                    sql_query = f"""
-                    SELECT {analysis_type.lower()}, SUM({metric}) AS total_{metric}
-                    FROM data_table
-                    WHERE {analysis_type.lower()} IN ('{period1}', '{period2}')
-                    GROUP BY {analysis_type.lower()};
-                    """
-                try:
-                    df_result = pd.read_sql_query(sql_query, st.session_state.analyzer.conn)
-                    logger.info("Quick analysis executed successfully.")
-                    st.write("### Quick Analysis Results")
-                    st.dataframe(df_result)
-
-                    # Chart Visualization
-                    st.write("### Chart Visualization")
-                    fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
-                    st.plotly_chart(fig, use_container_width=True)
-
-                except Exception as e:
-                    logger.error(f"Error during quick analysis: {e}")
-                    st.error(f"Error during analysis: {e}")
-
             # Analyze button
             analyze_button = st.button("🔍 Analyze")
 
@@ -317,7 +274,8 @@ def main():
                 else:
                     try:
                         with st.spinner("Analyzing your data..."):
-                            df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
+                            analyzer = st.session_state.analyzer
+                            df_result, sql_query = analyzer.analyze(user_query, schema_info)
 
                         # Determine if the user wants a table or chart
                         if "table" in user_query.lower():
@@ -352,6 +310,9 @@ def main():
 
         Upload any Excel or CSV file, and analyze it with natural language queries!
         """)
+
+    # Close the database connection when the app stops
+    st.on_event("shutdown", st.session_state.analyzer.close_connection)
 
 if __name__ == "__main__":
     logger.info("Starting the Streamlit application...")
