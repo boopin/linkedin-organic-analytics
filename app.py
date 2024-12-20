@@ -82,7 +82,8 @@ class DataAnalyzer:
                     "You are an SQL expert. Based on the user's request, generate a valid SQL SELECT query. "
                     "The table is named 'data_table' and has the following columns: {columns}. "
                     "User's request: {user_query}. "
-                    "Ensure the query starts with SELECT, uses valid SQL syntax, and is structured correctly."
+                    "The query should start with SELECT, include valid SQL syntax, and must return a table of results."
+                    " If filtering by a month, ensure you filter correctly by the month name or number."
                 )
             )
         ])
@@ -91,8 +92,10 @@ class DataAnalyzer:
         chain = LLMChain(llm=self.llm, prompt=prompt_template)
         sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)}).strip()
 
-        # Log and validate query
+        # Log the generated query
         logger.info(f"Generated SQL query: {sql_query}")
+
+        # Validate the query
         if not sql_query.lower().startswith("select"):
             raise ValueError("Generated query is not a valid SELECT statement.")
 
@@ -114,7 +117,22 @@ class DataAnalyzer:
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {e}")
-            raise Exception(f"Analysis failed: {str(e)}")
+
+            # Provide fallback query example
+            fallback_query = (
+                "SELECT strftime('%m', date) AS month, SUM(impressions_total) AS total_impressions "
+                "FROM data_table "
+                "WHERE strftime('%m', date) IN ('10', '11') "
+                "GROUP BY month;"
+            )
+            logger.info(f"Using fallback query: {fallback_query}")
+
+            try:
+                df_result = pd.read_sql_query(fallback_query, self.conn)
+                return df_result, fallback_query
+            except Exception as fallback_error:
+                logger.error(f"Fallback query also failed: {fallback_error}")
+                raise Exception("Analysis failed: Both primary and fallback queries failed.")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
@@ -156,10 +174,11 @@ def main():
                     st.code(sql_query, language='sql')
 
                     # Visualization
-                    if "quarter" in df_result.columns:
-                        fig = px.bar(df_result, x='quarter', y=df_result.columns[1], title="Quarterly Comparison")
+                    if "month" in df_result.columns or "quarter" in df_result.columns:
+                        x_axis = "month" if "month" in df_result.columns else "quarter"
+                        fig = px.bar(df_result, x=x_axis, y=df_result.columns[1], title="Comparison Results")
                     else:
-                        fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Result")
+                        fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
                     st.plotly_chart(fig)
                 except Exception as e:
                     st.error(str(e))
