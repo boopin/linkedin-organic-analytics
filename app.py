@@ -136,6 +136,9 @@ class DataAnalyzer:
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
+            if not self.current_table:
+                raise Exception("No data loaded. Please upload a dataset first.")
+
             logger.info("Analyzing user query...")
             user_query = self.generate_monthly_filter(user_query)
             if "quarter" in user_query.lower():
@@ -276,59 +279,4 @@ def main():
             # Input for user query
             user_query = st.text_area(
                 "Enter your query about the data",
-                placeholder="e.g., 'Show the monthly trend of impressions' or 'What is the total for each quarter?'",
-                height=100
-            )
-
-            # Analyze button
-            analyze_button = st.button("🔍 Analyze")
-
-            if analyze_button:
-                if not user_query:
-                    st.warning("Please enter a query before clicking Analyze.")
-                else:
-                    try:
-                        with st.spinner("Analyzing your data..."):
-                            analyzer = st.session_state.analyzer
-                            df_result, sql_query = analyzer.analyze(user_query, schema_info)
-
-                        # Determine if the user wants a table or chart
-                        if "table" in user_query.lower():
-                            st.dataframe(df_result)  # Display as table
-                        else:
-                            # Display results
-                            tab1, tab2 = st.tabs(["🔹 Visualization", "🔍 Query"])
-
-                            with tab1:
-                                fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
-                                st.plotly_chart(fig, use_container_width=True)
-
-                            with tab2:
-                                st.code(sql_query, language='sql')
-
-                    except Exception as e:
-                        logger.error(f"Error during analysis: {str(e)}")
-                        st.error(f"Error during analysis: {str(e)}")
-        else:
-            logger.error(f"Error loading data: {schema_info}")
-            st.error(f"Error loading data: {schema_info}")
-
-    # Sidebar
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.markdown("""
-        This app uses:
-        - SQLite for data analysis
-        - OpenAI and LangChain for natural language to SQL translation
-        - Plotly for visualizations
-        - Streamlit for the UI
-
-        Upload any Excel or CSV file, and analyze it with natural language queries!
-        """)
-
-    # Close the database connection when the app stops
-    st.on_event("shutdown", st.session_state.analyzer.close_connection)
-
-if __name__ == "__main__":
-    logger.info("Starting the Streamlit application...")
-    main()
+                placeholder="e.g., 'Show the monthly
