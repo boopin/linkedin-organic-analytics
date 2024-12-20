@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
-        self.current_table = None
+        self.current_table = 'data_table'
         self.llm = ChatOpenAI(model="gpt-3.5-turbo")  # Updated for chat-based model
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
@@ -52,12 +52,14 @@ class DataAnalyzer:
             else:
                 st.warning("No 'date' column detected. Time-based analyses will be unavailable for this sheet.")
 
+            # Drop the existing table if it exists
+            cursor = self.conn.cursor()
+            cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
+
             # Save the processed dataset into SQLite
-            self.current_table = 'data_table'
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
             # Return schema information for user feedback
-            cursor = self.conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             return True, self.format_schema_info(schema_info)
 
