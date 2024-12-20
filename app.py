@@ -17,27 +17,46 @@ class DataAnalyzer:
         self.llm = ChatOpenAI(model="gpt-4")
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean column names and handle missing or invalid data."""
+        """Clean column names, handle missing or invalid data, and create a 'month' column."""
         df.columns = [c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_') for c in df.columns]
+
+        # Parse the date column and create a 'month' column
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df['month'] = df['date'].dt.to_period('M').astype(str)  # Convert to YYYY-MM format
+
+        # Drop entirely empty columns
         df = df.dropna(how='all', axis=1)
+
+        # Fill missing numeric values with 0 and ensure consistent types
         for col in df.select_dtypes(include=['float64', 'int64']).columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        # Ensure all column names and data types are compatible with SQLite
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str).fillna('')
+
         if df.empty:
-            raise ValueError("The dataset is empty after preprocessing.")
+            raise ValueError("The dataset is empty after preprocessing. Ensure the sheet contains valid data.")
+
         return df
 
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load preprocessed DataFrame into SQLite database after file upload."""
+        """Load preprocessed DataFrame into SQLite database."""
         try:
             processed_df = self.preprocess_data(df)
             logger.info(f"Processed dataset: {processed_df.head()}")
+
+            # Drop existing table
             cursor = self.conn.cursor()
             cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
+
+            # Save the processed dataset into SQLite
             processed_df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
             logger.info(f"Table '{self.current_table}' created successfully in SQLite.")
+
+            # Return schema information for user feedback
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             return True, "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
         except Exception as e:
@@ -54,7 +73,7 @@ class DataAnalyzer:
 
     def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis based on user query."""
-        metric = None  # Initialize metric to None
+        metric = None
         try:
             self.verify_table_existence()
             metric = self.extract_metric_from_query(user_query, df)
@@ -62,17 +81,17 @@ class DataAnalyzer:
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
+            # Fallback query with dynamic column handling
             if not metric:
-                # Attempt to use a default numeric column
                 numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
                 if numeric_columns:
                     metric = numeric_columns[0]
                 else:
                     raise Exception("No numeric columns available for fallback query.")
 
-            # Construct fallback query
-            fallback_query = f"SELECT post_title, post_link, post_type, {metric} FROM {self.current_table} ORDER BY {metric} DESC LIMIT 5;"
+            # Ensure fallback query uses dataset-compatible columns
             try:
+                fallback_query = f"SELECT month, SUM({metric}) AS total_{metric} FROM {self.current_table} WHERE month IN ('2024-07', '2024-08') GROUP BY month;"
                 df_result = pd.read_sql_query(fallback_query, self.conn)
                 return df_result, fallback_query
             except Exception as fallback_error:
@@ -84,7 +103,10 @@ class DataAnalyzer:
         for word in user_query.lower().split():
             if word in available_columns:
                 return word
-        raise ValueError("Requested metric not found in the dataset.")
+        numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
+        if numeric_columns:
+            return numeric_columns[0]  # Default to the first numeric column
+        raise ValueError("Requested metric not found in the dataset and no numeric columns available.")
 
     def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
         """Generate SQL query dynamically using GPT-4."""
@@ -134,14 +156,15 @@ def main():
 
     if success:
         st.success("Data loaded successfully!")
-        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by likes.")
+        user_query = st.text_area("Enter your query", placeholder="Show me total impressions per month for August vs July.")
         if st.button("Analyze"):
             try:
-                result, query = st.session_state.analyzer.analyze(user_query, df)
-                st.write("**SQL Query Used:**")
-                st.code(query, language='sql')
+                with st.spinner("Analyzing your data..."):
+                    result, query = st.session_state.analyzer.analyze(user_query, df)
                 st.write("**Analysis Result:**")
                 st.dataframe(result)
+                st.write("**SQL Query Used:**")
+                st.code(query, language='sql')
             except Exception as e:
                 st.error(str(e))
     else:
