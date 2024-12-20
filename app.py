@@ -1,309 +1,310 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from langchain.agents import create_pandas_dataframe_agent
-from langchain.llms import OpenAI
+import sqlite3
+from typing import Tuple
 from datetime import datetime
-import numpy as np
-from typing import List, Dict, Any, Tuple
-import re
-import io
-import base64
+import logging
+import openai
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.llms import OpenAI
 
-class CampaignAnalyzer:
-    """Handles advanced campaign analysis."""
-    
-    @staticmethod
-    def analyze_campaign_performance(df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze campaign performance metrics."""
-        campaign_metrics = df.groupby('Campaign name').agg({
-            'Impressions': 'sum',
-            'Clicks': 'sum',
-            'Engagement rate': 'mean',
-            'Campaign duration': 'first',
-            'Content Type': lambda x: list(x.unique()),
-            'Post title': 'count'
-        }).round(2)
-        
-        campaign_metrics.rename(columns={'Post title': 'Number of Posts'}, inplace=True)
-        campaign_metrics['CTR'] = (campaign_metrics['Clicks'] / campaign_metrics['Impressions'] * 100).round(2)
-        
-        return campaign_metrics
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    @staticmethod
-    def create_campaign_timeline(df: pd.DataFrame) -> go.Figure:
-        """Create campaign timeline visualization."""
-        campaigns = df['Campaign name'].unique()
-        
-        fig = go.Figure()
-        
-        for campaign in campaigns:
-            campaign_data = df[df['Campaign name'] == campaign]
-            
-            fig.add_trace(go.Bar(
-                name=campaign,
-                x=[campaign],
-                y=[(campaign_data['Campaign end date'].max() - 
-                    campaign_data['Campaign start date'].min()).days],
-                text=campaign_data['Engagement rate'].mean().round(2),
-                customdata=np.array([
-                    [campaign_data['Impressions'].sum(),
-                     campaign_data['Clicks'].sum(),
-                     len(campaign_data)]
-                ]),
-                hovertemplate="Campaign: %{x}<br>" +
-                             "Duration: %{y} days<br>" +
-                             "Avg Engagement Rate: %{text}%<br>" +
-                             "Total Impressions: %{customdata[0]}<br>" +
-                             "Total Clicks: %{customdata[1]}<br>" +
-                             "Number of Posts: %{customdata[2]}"
-            ))
-        
-        fig.update_layout(
-            title="Campaign Duration and Performance",
-            xaxis_title="Campaign",
-            yaxis_title="Duration (days)",
-            barmode='group',
-            height=500
+# Configure OpenAI API key
+openai.api_key = "your-openai-api-key"  # Replace with your OpenAI API key
+
+class DataAnalyzer:
+    def __init__(self):
+        if 'db_conn' not in st.session_state:
+            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+        else:
+            # Reset the connection to avoid stale state
+            st.session_state.db_conn.close()
+            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+        self.conn = st.session_state.db_conn
+        self.current_table = None
+        self.llm = OpenAI(temperature=0)  # LangChain LLM setup
+
+    def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
+        """Load data from uploaded file into SQLite database"""
+        try:
+            if file.name.endswith('.csv'):
+                df = pd.read_csv(file)
+            else:
+                # Load specific sheet or first sheet by default
+                if sheet_name is None:
+                    excel_file = pd.ExcelFile(file)
+                    sheet_name = excel_file.sheet_names[0]
+                df = pd.read_excel(file, sheet_name=sheet_name)
+
+            # Clean column names for SQL compatibility
+            original_columns = df.columns.tolist()
+            df.columns = [
+                c.lower()
+                .strip()
+                .replace(' ', '_')
+                .replace('(', '')
+                .replace(')', '')
+                .replace('-', '_')
+                for c in df.columns
+            ]
+            logger.info(f"Original columns: {original_columns}")
+            logger.info(f"Normalized columns: {df.columns.tolist()}")
+
+            # Process date column
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                if df['date'].isnull().all():
+                    logger.warning("The 'date' column contains no valid dates. Please check the uploaded file.")
+                    st.warning("The 'date' column in your file contains no valid dates. Please upload a file with properly formatted dates.")
+                else:
+                    # Add time-based aggregation columns
+                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)  # e.g., '2024-01-07/2024-01-13'
+                    df['year_month'] = df['date'].dt.to_period('M').astype(str)  # e.g., '2024-01'
+                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)  # e.g., 'Q1 2024'
+                    df['year'] = df['date'].dt.year.astype(str)  # e.g., '2024'
+            else:
+                logger.warning("No 'date' column found in the uploaded data.")
+                st.warning("No 'date' column found in the uploaded data. Columns 'year_month', 'week', 'quarter', and 'year' cannot be generated.")
+
+            # Store table name
+            self.current_table = 'data_table'
+
+            # Save to SQLite (replace existing table)
+            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+
+            # Get schema info
+            cursor = self.conn.cursor()
+            schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
+            return True, self.format_schema_info(schema_info)
+        except Exception as e:
+            logger.error(f"Error loading data: {str(e)}")
+            return False, str(e)
+
+    def format_schema_info(self, schema_info) -> str:
+        """Format schema information for display"""
+        columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
+        return "Table columns:\n" + "\n".join(columns)
+
+    def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
+        """Generate and execute SQL query based on user input"""
+        try:
+            user_query = self.generate_monthly_filter(user_query)
+            sql_query = self.generate_sql_with_langchain(user_query, schema_info)
+
+            # Execute SQL and fetch results
+            df_result = pd.read_sql_query(sql_query, self.conn)
+
+            # Verify if the query returned any data
+            if df_result.empty:
+                raise Exception("The query returned no data. Ensure the dataset has relevant data for the requested period.")
+
+            return df_result, sql_query
+        except Exception as e:
+            logger.error(f"Analysis error: {str(e)}")
+            raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted and the necessary columns exist.")
+
+    def generate_monthly_filter(self, user_query: str) -> str:
+        """Map user-specified months to year_month values"""
+        month_mapping = {
+            "january": "01", "february": "02", "march": "03",
+            "april": "04", "may": "05", "june": "06",
+            "july": "07", "august": "08", "september": "09",
+            "october": "10", "november": "11", "december": "12"
+        }
+        for month_name, month_code in month_mapping.items():
+            if month_name in user_query.lower():
+                year = "2024"  # Default year if not specified
+                if "2023" in user_query:
+                    year = "2023"
+                user_query = user_query.replace(month_name.capitalize(), f"{year}-{month_code}")
+        return user_query
+
+    def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
+        """Generate SQL query using LangChain"""
+        # Fetch available columns
+        cursor = self.conn.cursor()
+        available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+        logger.info(f"Available columns in the table: {available_columns}")
+
+        # Dynamically map user-specified columns to actual columns in the database
+        column_mapping = {}
+        for col in available_columns:
+            normalized_col = col.replace('_', ' ').lower()
+            column_mapping[normalized_col] = col
+        logger.info(f"Column mapping: {column_mapping}")
+
+        # Normalize user query by replacing user-friendly terms with actual column names
+        normalized_query = user_query.lower()
+        for user_col, actual_col in column_mapping.items():
+            normalized_query = normalized_query.replace(user_col, actual_col)
+        logger.info(f"Normalized user query: {normalized_query}")
+
+        # LangChain prompt for SQL generation
+        prompt_template = PromptTemplate(
+            input_variables=["user_query", "columns"],
+            template=(
+                "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
+                "The table is named '{table_name}' and has the following columns: {columns}. "
+                "User request: '{user_query}'. Make sure to handle time-based aggregations such as weekly, monthly, quarterly, or yearly trends if the user specifies a time period."
+            ),
         )
-        
-        return fig
 
-class ContentAnalyzer:
-    """Handles content type analysis and comparisons."""
-    
-    @staticmethod
-    def analyze_content_performance(df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze performance by content type."""
-        content_metrics = df.groupby('Content Type').agg({
-            'Impressions': ['sum', 'mean'],
-            'Clicks': ['sum', 'mean'],
-            'Engagement rate': ['mean', 'std'],
-            'Post title': 'count'
-        }).round(2)
-        
-        content_metrics.columns = [
-            'Total Impressions', 'Avg Impressions',
-            'Total Clicks', 'Avg Clicks',
-            'Avg Engagement Rate', 'Engagement Rate Std',
-            'Number of Posts'
-        ]
-        
-        return content_metrics
-
-    @staticmethod
-    def create_content_comparison_plot(df: pd.DataFrame) -> go.Figure:
-        """Create content type comparison visualization."""
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Engagement by Content Type',
-                          'Impressions by Content Type',
-                          'Clicks by Content Type',
-                          'Post Distribution')
-        )
-        
-        content_metrics = ContentAnalyzer.analyze_content_performance(df)
-        
-        # Engagement plot
-        fig.add_trace(
-            go.Bar(x=content_metrics.index,
-                  y=content_metrics['Avg Engagement Rate'],
-                  name='Avg Engagement Rate'),
-            row=1, col=1
-        )
-        
-        # Impressions plot
-        fig.add_trace(
-            go.Bar(x=content_metrics.index,
-                  y=content_metrics['Avg Impressions'],
-                  name='Avg Impressions'),
-            row=1, col=2
-        )
-        
-        # Clicks plot
-        fig.add_trace(
-            go.Bar(x=content_metrics.index,
-                  y=content_metrics['Avg Clicks'],
-                  name='Avg Clicks'),
-            row=2, col=1
-        )
-        
-        # Post distribution plot
-        fig.add_trace(
-            go.Pie(labels=content_metrics.index,
-                  values=content_metrics['Number of Posts'],
-                  name='Post Distribution'),
-            row=2, col=2
-        )
-        
-        fig.update_layout(height=800, showlegend=False)
-        return fig
-
-class DataExporter:
-    """Handles data export functionality."""
-    
-    @staticmethod
-    def generate_excel_download_link(df: pd.DataFrame, filename: str) -> str:
-        """Generate a download link for Excel file."""
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='Analysis Results')
-        excel_data = output.getvalue()
-        b64 = base64.b64encode(excel_data).decode()
-        return f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">Download Excel file</a>'
-
-    @staticmethod
-    def generate_csv_download_link(df: pd.DataFrame, filename: str) -> str:
-        """Generate a download link for CSV file."""
-        csv = df.to_csv(index=True)
-        b64 = base64.b64encode(csv.encode()).decode()
-        return f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV file</a>'
-
-def create_specialized_visualizations(df: pd.DataFrame, metric: str) -> go.Figure:
-    """Create specialized visualizations for specific metrics."""
-    
-    if 'engagement' in metric.lower():
-        # Create engagement funnel
-        fig = go.Figure(go.Funnel(
-            name='Engagement Funnel',
-            y=['Impressions', 'Clicks', 'Reactions', 'Comments', 'Reposts'],
-            x=[df[col].sum() for col in 
-               ['Impressions (total)', 'Clicks (total)', 
-                'Reactions (total)', 'Comments (total)', 'Reposts (total)']]
-        ))
-        fig.update_layout(title='Engagement Funnel')
-        
-    elif 'impression' in metric.lower():
-        # Create stacked area chart for impressions
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df['Date'],
-            y=df['Impressions (organic)'],
-            name='Organic',
-            stackgroup='one'
-        ))
-        fig.add_trace(go.Scatter(
-            x=df['Date'],
-            y=df['Impressions (sponsored)'],
-            name='Sponsored',
-            stackgroup='one'
-        ))
-        fig.update_layout(title='Organic vs Sponsored Impressions')
-        
-    else:
-        # Create default line chart with trend
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df['Date'],
-            y=df[metric],
-            name=metric
-        ))
-        # Add trend line
-        z = np.polyfit(range(len(df)), df[metric], 1)
-        p = np.poly1d(z)
-        fig.add_trace(go.Scatter(
-            x=df['Date'],
-            y=p(range(len(df))),
-            name='Trend',
-            line=dict(dash='dash')
-        ))
-        fig.update_layout(title=f'{metric} Over Time')
-    
-    return fig
+        # Generate SQL using LangChain
+        chain = LLMChain(llm=self.llm, prompt=prompt_template)
+        sql_query = chain.run(user_query=normalized_query, columns=", ".join(available_columns), table_name=self.current_table)
+        logger.info(f"Generated SQL query: {sql_query}")
+        return sql_query
 
 def main():
-    st.set_page_config(page_title="Enhanced LinkedIn Data Analyzer", layout="wide")
-    st.title("Enhanced LinkedIn Data Analyzer")
-    
-    # Sidebar for navigation
+    st.set_page_config(page_title="AI Data Analyzer", layout="wide")
+    st.title("🔹 AI-Powered Data Analyzer")
+    st.write("Upload your data and analyze it with your own queries!")
+
+    # Initialize analyzer
+    if 'analyzer' not in st.session_state:
+        st.session_state.analyzer = DataAnalyzer()
+
+    # File upload
+    uploaded_file = st.file_uploader("Upload your data (Excel or CSV)", type=['xlsx', 'xls', 'csv'])
+    selected_sheet = None
+
+    if uploaded_file:
+        # Reinitialize the analyzer to reset the database connection for new files
+        st.session_state.analyzer = DataAnalyzer()
+
+        if uploaded_file.name.endswith(('xls', 'xlsx')):
+            excel_file = pd.ExcelFile(uploaded_file)
+            sheet_names = excel_file.sheet_names
+            selected_sheet = st.selectbox("Select a sheet to analyze", sheet_names)
+
+        success, schema_info = st.session_state.analyzer.load_data(uploaded_file, sheet_name=selected_sheet)
+
+        if success:
+            st.success("Data loaded successfully!")
+
+            with st.expander("View Data Schema"):
+                st.code(schema_info)
+
+            with st.expander("View Data Columns"):
+                cursor = st.session_state.analyzer.conn.cursor()
+                columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({st.session_state.analyzer.current_table})").fetchall()]
+                st.write(columns)
+
+            # Input for user query
+            user_query = st.text_area(
+                "Enter your query about the data",
+                placeholder="e.g., 'Show the monthly trend of impressions' or 'What is the total for each quarter?'",
+                height=100
+            )
+
+            # Quick Analysis Options
+            st.sidebar.header("Quick Analysis")
+            metric = st.sidebar.selectbox("Select Metric", ["impressions_total", "clicks_total", "engagement_rate_total"])
+            analysis_type = st.sidebar.selectbox("Select Analysis Type", ["Monthly", "Quarterly", "Yearly", "Weekly"])
+            compare = st.sidebar.checkbox("Compare Periods?")
+            period1 = None
+            period2 = None
+            if compare:
+                period1 = st.sidebar.text_input("Enter Period 1 (e.g., Q3 2024, 2024-10)")
+                period2 = st.sidebar.text_input("Enter Period 2 (e.g., Q4 2024, 2024-11)")
+            run_analysis = st.sidebar.button("Run Quick Analysis")
+
+            if run_analysis:
+                if analysis_type == "Monthly":
+                    sql_query = f"""
+                    SELECT year_month, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY year_month
+                    ORDER BY year_month;
+                    """
+                elif analysis_type == "Quarterly":
+                    sql_query = f"""
+                    SELECT quarter, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY quarter
+                    ORDER BY quarter;
+                    """
+                elif analysis_type == "Yearly":
+                    sql_query = f"""
+                    SELECT year, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY year
+                    ORDER BY year;
+                    """
+                elif analysis_type == "Weekly":
+                    sql_query = f"""
+                    SELECT week, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    GROUP BY week
+                    ORDER BY week;
+                    """
+                if compare and period1 and period2:
+                    sql_query = f"""
+                    SELECT {analysis_type.lower()}, SUM({metric}) AS total_{metric}
+                    FROM data_table
+                    WHERE {analysis_type.lower()} IN ('{period1}', '{period2}')
+                    GROUP BY {analysis_type.lower()};
+                    """
+                try:
+                    df_result = pd.read_sql_query(sql_query, st.session_state.analyzer.conn)
+                    st.write("### Quick Analysis Results")
+                    st.dataframe(df_result)
+
+                    # Chart Visualization
+                    st.write("### Chart Visualization")
+                    fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Error during analysis: {e}")
+
+            # Analyze button
+            analyze_button = st.button("🔍 Analyze")
+
+            if analyze_button:
+                if not user_query:
+                    st.warning("Please enter a query before clicking Analyze.")
+                else:
+                    try:
+                        with st.spinner("Analyzing your data..."):
+                            df_result, sql_query = st.session_state.analyzer.analyze(user_query, schema_info)
+
+                        # Determine if the user wants a table or chart
+                        if "table" in user_query.lower():
+                            st.dataframe(df_result)  # Display as table
+                        else:
+                            # Display results
+                            tab1, tab2 = st.tabs(["🔹 Visualization", "🔍 Query"])
+
+                            with tab1:
+                                fig = px.bar(df_result, x=df_result.columns[0], y=df_result.columns[1], title="Analysis Results")
+                                st.plotly_chart(fig, use_container_width=True)
+
+                            with tab2:
+                                st.code(sql_query, language='sql')
+
+                    except Exception as e:
+                        st.error(f"Error during analysis: {str(e)}")
+        else:
+            st.error(f"Error loading data: {schema_info}")
+
+    # Sidebar
     with st.sidebar:
-        st.header("📊 Analysis Options")
-        analysis_type = st.radio(
-            "Select Analysis Type:",
-            ["Metrics Analysis", 
-             "Campaign Analysis",
-             "Content Analysis",
-             "Custom Analysis"]
-        )
-    
-    # File upload section
-    metrics_file = st.file_uploader("Upload Metrics Sheet", type=['xlsx', 'csv'], key='metrics')
-    posts_file = st.file_uploader("Upload Posts Sheet", type=['xlsx', 'csv'], key='posts')
-    
-    if metrics_file and posts_file:
-        # Load and process data
-        metrics_df = pd.read_excel(metrics_file) if metrics_file.name.endswith('xlsx') else pd.read_csv(metrics_file)
-        posts_df = pd.read_excel(posts_file) if posts_file.name.endswith('xlsx') else pd.read_csv(posts_file)
-        
-        # Main analysis section
-        if analysis_type == "Metrics Analysis":
-            st.header("Metrics Analysis")
-            
-            metric = st.selectbox("Select Metric:", metrics_df.columns[1:])
-            period = st.selectbox("Select Time Period:", ['Daily', 'Weekly', 'Monthly', 'Quarterly'])
-            
-            # Create specialized visualization
-            fig = create_specialized_visualizations(metrics_df, metric)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Export options
-            st.subheader("Export Options")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(DataExporter.generate_excel_download_link(
-                    metrics_df, 'metrics_analysis.xlsx'), unsafe_allow_html=True)
-            with col2:
-                st.markdown(DataExporter.generate_csv_download_link(
-                    metrics_df, 'metrics_analysis.csv'), unsafe_allow_html=True)
-        
-        elif analysis_type == "Campaign Analysis":
-            st.header("Campaign Analysis")
-            
-            # Campaign performance analysis
-            campaign_metrics = CampaignAnalyzer.analyze_campaign_performance(posts_df)
-            st.dataframe(campaign_metrics)
-            
-            # Campaign timeline visualization
-            fig = CampaignAnalyzer.create_campaign_timeline(posts_df)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Export options
-            st.subheader("Export Options")
-            st.markdown(DataExporter.generate_excel_download_link(
-                campaign_metrics, 'campaign_analysis.xlsx'), unsafe_allow_html=True)
-        
-        elif analysis_type == "Content Analysis":
-            st.header("Content Analysis")
-            
-            # Content performance analysis
-            content_metrics = ContentAnalyzer.analyze_content_performance(posts_df)
-            st.dataframe(content_metrics)
-            
-            # Content comparison visualization
-            fig = ContentAnalyzer.create_content_comparison_plot(posts_df)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Export options
-            st.markdown(DataExporter.generate_excel_download_link(
-                content_metrics, 'content_analysis.xlsx'), unsafe_allow_html=True)
-        
-        else:  # Custom Analysis
-            st.header("Custom Analysis")
-            
-            # Let user select metrics and dimensions
-            metrics = st.multiselect("Select Metrics:", metrics_df.columns[1:])
-            dimension = st.selectbox("Select Dimension:", 
-                                   ['Content Type', 'Campaign name', 'Posted by'])
-            
-            if metrics and dimension:
-                custom_analysis = posts_df.groupby(dimension)[metrics].agg(['mean', 'sum']).round(2)
-                st.dataframe(custom_analysis)
-                
-                # Export options
-                st.markdown(DataExporter.generate_excel_download_link(
-                    custom_analysis, 'custom_analysis.xlsx'), unsafe_allow_html=True)
+        st.header("ℹ️ About")
+        st.markdown("""
+        This app uses:
+        - SQLite for data analysis
+        - OpenAI and LangChain for natural language to SQL translation
+        - Plotly for visualizations
+        - Streamlit for the UI
+
+        Upload any Excel or CSV file, and analyze it with natural language queries!
+        """)
 
 if __name__ == "__main__":
     main()
