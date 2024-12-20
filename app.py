@@ -95,6 +95,11 @@ class DataAnalyzer:
 
             # Execute SQL and fetch results
             df_result = pd.read_sql_query(sql_query, self.conn)
+
+            # Verify if the query returned any data
+            if df_result.empty:
+                raise Exception("The query returned no data. Ensure the dataset has relevant data for the requested period.")
+
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {str(e)}")
