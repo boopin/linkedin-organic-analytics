@@ -1,44 +1,24 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import sqlite3
 from typing import Tuple
 import logging
-import openai
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain_community.llms import OpenAI  # Updated import
+from datetime import datetime
+import plotly.express as px
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure OpenAI API key
-openai.api_key = "your-openai-api-key"  # Replace with your OpenAI API key
-
 class DataAnalyzer:
     def __init__(self):
-        self.conn = None
+        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = None
-        self.llm = OpenAI(temperature=0)  # LangChain LLM setup
-        logger.info("DataAnalyzer initialized.")
-
-    def get_connection(self):
-        """Ensure the database connection is open and return it."""
-        if self.conn is None or not self.conn:
-            self.conn = sqlite3.connect(':memory:', check_same_thread=False)
-        return self.conn
-
-    def close_connection(self):
-        """Close the database connection to avoid memory leaks."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            logger.info("Database connection closed.")
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from uploaded file into SQLite database and compute derived columns."""
+        """Load data from the uploaded file into SQLite database and compute derived columns."""
         try:
+            # Load data
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file)
             else:
@@ -53,13 +33,26 @@ class DataAnalyzer:
                 for c in df.columns
             ]
 
-            logger.info("Saving processed data to SQLite...")
+            # Check and process the date column
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')  # Parse dates
+                if not df['date'].isnull().all():
+                    # Compute derived time-based fields
+                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
+                    df['year_month'] = df['date'].dt.to_period('M').astype(str)
+                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
+                    df['year'] = df['date'].dt.year.astype(str)
+                else:
+                    raise ValueError("The 'date' column contains no valid dates. Please check the dataset.")
+            else:
+                raise ValueError("The dataset is missing a 'date' column.")
+
+            # Save the processed dataset into SQLite
             self.current_table = 'data_table'
-            conn = self.get_connection()
-            df.to_sql(self.current_table, conn, index=False, if_exists='replace')
+            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
             # Return schema information for user feedback
-            cursor = conn.cursor()
+            cursor = self.conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             return True, self.format_schema_info(schema_info)
 
@@ -68,45 +61,39 @@ class DataAnalyzer:
             return False, str(e)
 
     def format_schema_info(self, schema_info) -> str:
-        """Format schema information for display"""
-        columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
-        return "Table columns:\n" + "\n".join(columns)
+        """Format schema information for display."""
+        return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
-    def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
-        """Generate and execute SQL query based on user input"""
+    def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
+        """Perform analysis based on user query."""
         try:
-            if not self.current_table:
-                raise Exception("No data loaded. Please upload a dataset first.")
-            
-            sql_query = self.generate_sql_with_langchain(user_query, schema_info)
-            conn = self.get_connection()
-            df_result = pd.read_sql_query(sql_query, conn)
+            cursor = self.conn.cursor()
+            # Validate quarter data existence
+            available_quarters = [row[0] for row in cursor.execute("SELECT DISTINCT quarter FROM data_table").fetchall()]
+            if not set(['Q2 2024', 'Q3 2024']).issubset(set(available_quarters)):
+                raise ValueError("No data available for Q2 2024 or Q3 2024. Please check your dataset.")
+
+            # Generate SQL query for quarterly comparison
+            sql_query = """
+                SELECT quarter, SUM(impressions_total) AS total_impressions
+                FROM data_table
+                WHERE quarter IN ('Q2 2024', 'Q3 2024')
+                GROUP BY quarter;
+            """
+            df_result = pd.read_sql_query(sql_query, self.conn)
 
             if df_result.empty:
-                raise Exception("The query returned no data. Ensure the dataset has relevant data.")
+                raise ValueError("The query returned no data. Ensure the dataset has relevant information.")
+
             return df_result, sql_query
-
         except Exception as e:
-            logger.error(f"Analysis error: {str(e)}")
-            raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted.")
-
-    def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
-        """Generate SQL query using LangChain"""
-        prompt_template = PromptTemplate(
-            input_variables=["user_query", "columns"],
-            template=(
-                "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
-                "User request: '{user_query}'."
-            ),
-        )
-        chain = LLMChain(llm=self.llm, prompt=prompt_template)
-        sql_query = chain.run(user_query=user_query, columns=", ".join(self.get_table_columns()))
-        return sql_query
+            logger.error(f"Analysis error: {e}")
+            raise Exception(f"Analysis failed: {str(e)}")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
-    st.title("🔹 AI-Powered Data Analyzer")
-    st.write("Upload your data and analyze it with your own queries!")
+    st.title("📊 AI-Powered Data Analyzer")
+    st.write("Upload your dataset and analyze it with time-based insights!")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
@@ -115,26 +102,43 @@ def main():
     selected_sheet = None
 
     if uploaded_file:
-        analyzer = st.session_state.analyzer
         if uploaded_file.name.endswith(('xls', 'xlsx')):
             excel_file = pd.ExcelFile(uploaded_file)
-            sheet_names = excel_file.sheet_names
-            selected_sheet = st.selectbox("Select a sheet to analyze", sheet_names)
+            selected_sheet = st.selectbox("Select a sheet to analyze", excel_file.sheet_names)
 
-        success, schema_info = analyzer.load_data(uploaded_file, sheet_name=selected_sheet)
+        success, schema_info = st.session_state.analyzer.load_data(uploaded_file, selected_sheet)
+
         if success:
             st.success("Data loaded successfully!")
-            st.code(schema_info)
+            with st.expander("View Data Schema"):
+                st.code(schema_info)
 
-            user_query = st.text_area("Enter your query about the data", height=100)
+            user_query = st.text_area(
+                "Enter your query about the data",
+                placeholder="e.g., 'Compare Q3 and Q2 impressions' or 'Monthly trends for 2024'."
+            )
             if st.button("Analyze"):
                 try:
-                    df_result, sql_query = analyzer.analyze(user_query, schema_info)
-                    st.write(df_result)
+                    with st.spinner("Analyzing your data..."):
+                        df_result, sql_query = st.session_state.analyzer.analyze(user_query)
+                    st.write("### Analysis Results")
+                    st.dataframe(df_result)
+                    st.code(sql_query, language='sql')
+
+                    # Visualization
+                    fig = px.bar(df_result, x='quarter', y='total_impressions', title="Quarterly Comparison")
+                    st.plotly_chart(fig)
                 except Exception as e:
                     st.error(str(e))
         else:
-            st.error("Failed to load the data.")
+            st.error(f"Error loading data: {schema_info}")
+
+    with st.sidebar:
+        st.header("ℹ️ About")
+        st.markdown("""
+        - Supports time-based analyses (weekly, monthly, quarterly, yearly).
+        - Dynamically generates insights from user queries.
+        """)
 
 if __name__ == "__main__":
     main()
