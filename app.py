@@ -90,6 +90,18 @@ class DataAnalyzer:
         """Generate and execute SQL query based on user input"""
         try:
             user_query = self.generate_monthly_filter(user_query)
+            if "quarter" in user_query.lower():
+                user_query = user_query.replace(
+                    "quarter",
+                    """
+                    CASE
+                        WHEN strftime('%m', date) BETWEEN '01' AND '03' THEN 'Q1'
+                        WHEN strftime('%m', date) BETWEEN '04' AND '06' THEN 'Q2'
+                        WHEN strftime('%m', date) BETWEEN '07' AND '09' THEN 'Q3'
+                        WHEN strftime('%m', date) BETWEEN '10' AND '12' THEN 'Q4'
+                    END || ' ' || strftime('%Y', date)
+                    """
+                )
             sql_query = self.generate_sql_with_langchain(user_query, schema_info)
 
             # Execute SQL and fetch results
