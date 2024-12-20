@@ -17,7 +17,7 @@ class DataAnalyzer:
         self.llm = ChatOpenAI(model="gpt-4")  # Use GPT-4 for dynamic query generation
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from uploaded file into SQLite database and process optional time-based fields."""
+        """Load data from uploaded file into SQLite database."""
         try:
             # Load data
             if file.name.endswith('.csv'):
@@ -53,18 +53,22 @@ class DataAnalyzer:
         """Format schema information for display."""
         return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
+    def extract_columns(self) -> str:
+        """Extract column names dynamically from the loaded dataset."""
+        cursor = self.conn.cursor()
+        columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+        logger.info(f"Extracted columns: {columns}")
+        return ", ".join(columns)
+
     def generate_sql_with_gpt4(self, user_query: str) -> str:
         """Generate SQL query dynamically using GPT-4."""
-        cursor = self.conn.cursor()
-        available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
-        logger.info(f"Available columns: {available_columns}")
+        columns = self.extract_columns()
 
         # Create the prompt for GPT-4
         prompt = (
-            f"The table is named 'data_table' and has the following columns: {', '.join(available_columns)}. "
+            f"The table is named 'data_table' and has the following columns: {columns}. "
             f"Based on the user's request, generate a valid SQL SELECT query. "
-            f"The query should start with SELECT, use valid SQL syntax, and filter correctly by month and year. "
-            f"Ensure the query matches the user's intent: {user_query}."
+            f"The query should start with SELECT, use valid SQL syntax, and match the user's intent: {user_query}."
         )
 
         # Use GPT-4 to generate the query
@@ -92,7 +96,7 @@ class DataAnalyzer:
 
             # Check for empty results
             if df_result.empty:
-                raise ValueError("The query returned no data. Ensure the dataset has relevant information.")
+                raise ValueError("The query returned no data. Ensure the dataset has valid entries.")
 
             return df_result, sql_query
         except Exception as e:
@@ -102,7 +106,6 @@ class DataAnalyzer:
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("📊 AI-Powered Data Analyzer")
-    st.write("Upload your dataset and analyze it with GPT-4-driven insights!")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
@@ -141,13 +144,6 @@ def main():
                     st.error(str(e))
         else:
             st.error(f"Error loading data: {schema_info}")
-
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.markdown("""
-        - Uses GPT-4 to dynamically analyze your data based on natural language queries.
-        - Provides insights without requiring complex configuration or fine-tuning.
-        """)
 
 if __name__ == "__main__":
     main()
