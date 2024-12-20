@@ -8,7 +8,7 @@ import logging
 import openai
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain.llms import OpenAI
+from langchain_community.llms import OpenAI  # Updated import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
