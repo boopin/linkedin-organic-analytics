@@ -79,23 +79,31 @@ class DataAnalyzer:
         prompt_template = ChatPromptTemplate.from_messages([
             HumanMessage(
                 content=(
-                    "Generate a valid SQL query based on the following user request: {user_query}. "
-                    "The table is named 'data_table' and has the following columns: {columns}. "
-                    "Ensure the query returns meaningful results even if some fields are missing."
+                    "You are an expert SQL query generator. Based on the user's request, "
+                    "generate a valid SQL SELECT query. The table is named 'data_table' and has the following columns: {columns}. "
+                    "User's request: {user_query}. "
+                    "Ensure the query is syntactically correct and meaningful."
                 )
             )
         ])
 
         # Generate SQL query using LangChain
         chain = LLMChain(llm=self.llm, prompt=prompt_template)
-        sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)})
+        sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)}).strip()
         logger.info(f"Generated SQL query: {sql_query}")
         return sql_query
 
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
         """Perform analysis based on user query."""
         try:
+            # Generate the SQL query using LangChain
             sql_query = self.generate_sql_with_langchain(user_query)
+            
+            # Ensure the generated query is valid before execution
+            if not sql_query.strip().lower().startswith("select"):
+                raise ValueError("Generated query is not a valid SELECT statement.")
+
+            # Execute the query
             df_result = pd.read_sql_query(sql_query, self.conn)
 
             if df_result.empty:
