@@ -54,6 +54,7 @@ class DataAnalyzer:
 
     def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis based on user query."""
+        metric = None  # Initialize metric to None
         try:
             self.verify_table_existence()
             metric = self.extract_metric_from_query(user_query, df)
@@ -61,12 +62,21 @@ class DataAnalyzer:
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
+            if not metric:
+                # Attempt to use a default numeric column
+                numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
+                if numeric_columns:
+                    metric = numeric_columns[0]
+                else:
+                    raise Exception("No numeric columns available for fallback query.")
+
+            # Construct fallback query
             fallback_query = f"SELECT post_title, post_link, post_type, {metric} FROM {self.current_table} ORDER BY {metric} DESC LIMIT 5;"
             try:
                 df_result = pd.read_sql_query(fallback_query, self.conn)
                 return df_result, fallback_query
             except Exception as fallback_error:
-                raise Exception(f"Analysis failed: {e}, fallback query error: {fallback_error}")
+                raise Exception(f"Analysis failed: {e}\nFallback query error: {fallback_error}")
 
     def extract_metric_from_query(self, user_query: str, df: pd.DataFrame) -> str:
         """Extract the ranking metric from the user's query."""
@@ -107,18 +117,35 @@ def main():
         st.error("Please upload a dataset before analyzing.")
         st.stop()
 
-    df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('xlsx') else pd.read_csv(uploaded_file)
+    if uploaded_file.name.endswith('xlsx'):
+        # Load the Excel file
+        excel_file = pd.ExcelFile(uploaded_file)
+        sheet_names = excel_file.sheet_names
+
+        # Provide a dropdown if multiple sheets are available
+        sheet_name = st.selectbox("Select the sheet to analyze", sheet_names)
+
+        # Read the selected sheet
+        df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+    else:
+        df = pd.read_csv(uploaded_file)
+
     success, schema_info = st.session_state.analyzer.load_data(df)
 
     if success:
         st.success("Data loaded successfully!")
-        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by comments.")
+        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by likes.")
         if st.button("Analyze"):
             try:
                 result, query = st.session_state.analyzer.analyze(user_query, df)
-                st.write(result)
+                st.write("**SQL Query Used:**")
+                st.code(query, language='sql')
+                st.write("**Analysis Result:**")
+                st.dataframe(result)
             except Exception as e:
                 st.error(str(e))
+    else:
+        st.error(f"Failed to load data: {schema_info}")
 
 if __name__ == "__main__":
     main()
