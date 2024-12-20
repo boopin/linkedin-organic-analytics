@@ -16,21 +16,35 @@ class DataAnalyzer:
         self.current_table = 'data_table'
         self.llm = ChatOpenAI(model="gpt-4")  # Use GPT-4 for dynamic query generation
 
+    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean column names and handle missing or invalid data."""
+        # Clean column names
+        df.columns = [
+            c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
+            for c in df.columns
+        ]
+
+        # Ensure 'clicks' column exists and is numeric
+        if 'clicks' in df.columns:
+            df['clicks'] = pd.to_numeric(df['clicks'], errors='coerce')
+            df = df.dropna(subset=['clicks'])  # Drop rows with missing clicks
+        else:
+            raise ValueError("The dataset does not contain a 'clicks' column.")
+
+        return df
+
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load DataFrame into SQLite database."""
+        """Load preprocessed DataFrame into SQLite database."""
         try:
-            # Clean column names
-            df.columns = [
-                c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
-                for c in df.columns
-            ]
+            # Preprocess the dataset
+            processed_df = self.preprocess_data(df)
 
             # Drop existing table
             cursor = self.conn.cursor()
             cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
 
             # Save the processed dataset into SQLite
-            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+            processed_df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
             # Return schema information for user feedback
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
@@ -63,7 +77,8 @@ class DataAnalyzer:
             f"generate a valid SQL query that matches the user's intent.\n\n"
             f"{schema}\n\n"
             f"User Query: {user_query}\n\n"
-            f"The query should start with SELECT and be written for a SQLite database."
+            f"The query should return the top 5 posts ranked by the 'clicks' column, and include the following columns: "
+            f"'post_title', 'post_link', 'post_type', and 'clicks'. Ensure the query is written for a SQLite database."
         )
         return prompt
 
@@ -102,7 +117,21 @@ class DataAnalyzer:
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {e}")
-            raise Exception("Analysis failed. Please refine your query or check your dataset.")
+
+            # Provide a fallback query for top 5 posts
+            fallback_query = (
+                "SELECT post_title, post_link, post_type, clicks "
+                "FROM data_table "
+                "ORDER BY clicks DESC LIMIT 5;"
+            )
+            logger.info(f"Using fallback query: {fallback_query}")
+
+            try:
+                df_result = pd.read_sql_query(fallback_query, self.conn)
+                return df_result, fallback_query
+            except Exception as fallback_error:
+                logger.error(f"Fallback query also failed: {fallback_error}")
+                raise Exception("Analysis failed: Both primary and fallback queries failed.")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
@@ -133,7 +162,7 @@ def main():
 
                 user_query = st.text_area(
                     "Enter your query about the data",
-                    placeholder="e.g., 'Can you show me monthly total impressions for November 2024 vs October 2024 in a table?'"
+                    placeholder="e.g., 'Show me top 5 posts by clicks.'"
                 )
                 if st.button("Analyze"):
                     try:
