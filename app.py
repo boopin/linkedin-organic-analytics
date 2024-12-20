@@ -146,7 +146,13 @@ class DataAnalyzer:
             template=(
                 "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
                 "The table is named '{table_name}' and has the following columns: {columns}. "
-                "User request: '{user_query}'. Make sure to handle time-based aggregations such as weekly, monthly, quarterly, or yearly trends if the user specifies a time period."
+                "If the user query references quarters, dynamically calculate them from the 'date' column as follows: "
+                "CASE WHEN strftime('%m', date) BETWEEN '01' AND '03' THEN 'Q1' "
+                "WHEN strftime('%m', date) BETWEEN '04' AND '06' THEN 'Q2' "
+                "WHEN strftime('%m', date) BETWEEN '07' AND '09' THEN 'Q3' "
+                "WHEN strftime('%m', date) BETWEEN '10' AND '12' THEN 'Q4'. "
+                "Combine the quarter and year (e.g., 'Q1 2024'). "
+                "User request: '{user_query}'."
             ),
         )
 
@@ -224,7 +230,14 @@ def main():
                     """
                 elif analysis_type == "Quarterly":
                     sql_query = f"""
-                    SELECT quarter, SUM({metric}) AS total_{metric}
+                    SELECT 
+                        CASE 
+                            WHEN strftime('%m', date) BETWEEN '01' AND '03' THEN 'Q1'
+                            WHEN strftime('%m', date) BETWEEN '04' AND '06' THEN 'Q2'
+                            WHEN strftime('%m', date) BETWEEN '07' AND '09' THEN 'Q3'
+                            WHEN strftime('%m', date) BETWEEN '10' AND '12' THEN 'Q4'
+                        END || ' ' || strftime('%Y', date) AS quarter, 
+                        SUM({metric}) AS total_{metric}
                     FROM data_table
                     GROUP BY quarter
                     ORDER BY quarter;
