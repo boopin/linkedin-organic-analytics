@@ -5,8 +5,9 @@ from typing import Tuple
 import logging
 from datetime import datetime
 import plotly.express as px
-from langchain.llms import OpenAI
-from langchain.prompts import PromptTemplate
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema import HumanMessage
 from langchain.chains import LLMChain
 
 # Configure logging
@@ -17,7 +18,7 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = None
-        self.llm = OpenAI(model="gpt-3.5-turbo")  # Updated to a supported model
+        self.llm = ChatOpenAI(model="gpt-3.5-turbo")  # Updated for chat-based model
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and handle optional date-based processing."""
@@ -69,24 +70,25 @@ class DataAnalyzer:
         return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
     def generate_sql_with_langchain(self, user_query: str) -> str:
-        """Generate SQL query dynamically using LangChain."""
+        """Generate SQL query dynamically using LangChain and ChatOpenAI."""
         cursor = self.conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
         logger.info(f"Available columns: {available_columns}")
 
-        # Define LangChain prompt template
-        prompt_template = PromptTemplate(
-            input_variables=["user_query", "columns"],
-            template=(
-                "Generate a valid SQL query based on the following user request: {user_query}. "
-                "The table is named 'data_table' and has the following columns: {columns}. "
-                "Ensure the query returns meaningful results even if some fields are missing."
-            ),
-        )
+        # Define ChatLangChain prompt template
+        prompt_template = ChatPromptTemplate.from_messages([
+            HumanMessage(
+                content=(
+                    "Generate a valid SQL query based on the following user request: {user_query}. "
+                    "The table is named 'data_table' and has the following columns: {columns}. "
+                    "Ensure the query returns meaningful results even if some fields are missing."
+                )
+            )
+        ])
 
         # Generate SQL query using LangChain
         chain = LLMChain(llm=self.llm, prompt=prompt_template)
-        sql_query = chain.run(user_query=user_query, columns=", ".join(available_columns))
+        sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)})
         logger.info(f"Generated SQL query: {sql_query}")
         return sql_query
 
@@ -158,7 +160,7 @@ def main():
         st.header("ℹ️ About")
         st.markdown("""
         - Supports time-based analyses (weekly, monthly, quarterly, yearly).
-        - Dynamically generates insights from user queries using LangChain and OpenAI.
+        - Dynamically generates insights from user queries using LangChain and ChatOpenAI.
         - Provides interactive visualizations for key metrics.
         """)
 
