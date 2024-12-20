@@ -120,10 +120,17 @@ class DataAnalyzer:
             query = f"SELECT COUNT(*) FROM {self.current_table} WHERE {column} = ?"
             cursor.execute(query, (period,))
             count = cursor.fetchone()[0]
-            logger.info(f"Data availability check for {period}: {count} rows found.")
-            return count > 0
+            if count > 0:
+                logger.info(f"Data availability check for {period} in column {column}: {count} rows found.")
+                return True
+            else:
+                logger.warning(f"No data found for {period} in column {column}.")
+                return False
+        except sqlite3.OperationalError as e:
+            logger.error(f"OperationalError during data validation: {str(e)}. This could indicate a missing column or invalid SQL.")
+            return False
         except Exception as e:
-            logger.error(f"Error validating data availability: {str(e)}")
+            logger.error(f"Unexpected error during data validation: {str(e)}")
             return False
 
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
@@ -226,6 +233,14 @@ def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("🔹 AI-Powered Data Analyzer")
     st.write("Upload your data and analyze it with your own queries!")
+
+    # Notices for query structure
+    st.info("""
+        **Query Guidelines:**
+        - Specify the time period for analysis (e.g., "Compare Q3 2024 vs Q2 2024").
+        - Use clear column names like "impressions", "clicks", etc.
+        - Add "chart" or "table" to indicate the output format.
+        """)
 
     # Initialize analyzer
     if 'analyzer' not in st.session_state:
