@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import logging
+from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
@@ -66,6 +67,35 @@ class DataAnalyzer:
                 return df_result, fallback_query
             except Exception as fallback_error:
                 raise Exception(f"Analysis failed: {e}, fallback query error: {fallback_error}")
+
+    def extract_metric_from_query(self, user_query: str, df: pd.DataFrame) -> str:
+        """Extract the ranking metric from the user's query."""
+        available_columns = [col.lower() for col in df.columns]
+        for word in user_query.lower().split():
+            if word in available_columns:
+                return word
+        raise ValueError("Requested metric not found in the dataset.")
+
+    def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
+        """Generate SQL query dynamically using GPT-4."""
+        schema = self.extract_schema_and_sample(df)
+        prompt = (
+            f"You are an expert in data analysis. Based on the following dataset schema and sample data, "
+            f"generate a valid SQL query for a SQLite database that matches the user's intent.\n\n"
+            f"{schema}\n\nUser Query: {user_query}\n"
+        )
+        response = self.llm([HumanMessage(content=prompt)])
+        sql_query = response.content.strip()
+        if not sql_query.lower().startswith("select"):
+            raise ValueError("Generated query is not a valid SELECT statement.")
+        return sql_query
+
+    def extract_schema_and_sample(self, df: pd.DataFrame) -> str:
+        """Extract schema and sample data for GPT-4."""
+        schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
+        schema_description = " | ".join(schema)
+        sample_data = df.head(3).to_dict(orient="records")
+        return f"Schema: {schema_description}\nSample Data: {sample_data}"
 
 def main():
     st.title("AI Data Analyzer")
