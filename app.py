@@ -21,10 +21,6 @@ class DataAnalyzer:
     def __init__(self):
         if 'db_conn' not in st.session_state:
             st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
-        else:
-            # Reset the connection to avoid stale state
-            st.session_state.db_conn.close()
-            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn = st.session_state.db_conn
         self.current_table = None
         self.llm = OpenAI(temperature=0)  # LangChain LLM setup
