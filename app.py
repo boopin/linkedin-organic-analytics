@@ -5,10 +5,17 @@ import sqlite3
 from typing import Tuple
 from datetime import datetime
 import logging
+import openai
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.llms import OpenAI
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Configure OpenAI API key
+openai.api_key = "your-openai-api-key"  # Replace with your OpenAI API key
 
 class DataAnalyzer:
     def __init__(self):
@@ -20,6 +27,7 @@ class DataAnalyzer:
             st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn = st.session_state.db_conn
         self.current_table = None
+        self.llm = OpenAI(temperature=0)  # LangChain LLM setup
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database"""
@@ -82,8 +90,8 @@ class DataAnalyzer:
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
-            # Generate SQL query
-            sql_query = self.generate_sql(user_query, schema_info)
+            # Generate SQL query using LangChain and OpenAI
+            sql_query = self.generate_sql_with_langchain(user_query, schema_info)
 
             # Execute SQL and fetch results
             df_result = pd.read_sql_query(sql_query, self.conn)
@@ -92,58 +100,28 @@ class DataAnalyzer:
             logger.error(f"Analysis error: {str(e)}")
             raise Exception(f"Analysis failed: {str(e)}. Ensure the 'date' column is correctly formatted and the necessary columns exist.")
 
-    def generate_sql(self, user_query: str, schema_info: str) -> str:
-        """Generate SQL query using the user's prompt"""
+    def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
+        """Generate SQL query using LangChain"""
         # Fetch available columns
         cursor = self.conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
         logger.info(f"Available columns in the table: {available_columns}")
 
-        # Handle specific queries dynamically
-        if "top 5 posts" in user_query.lower() and "likes" in user_query.lower():
-            column_mapping = {
-                'likes': next((col for col in available_columns if 'likes' in col), None),
-                'post_title': next((col for col in available_columns if 'post_title' in col), None),
-                'posted_by': next((col for col in available_columns if 'posted_by' in col), None),
-                'post_link': next((col for col in available_columns if 'post_link' in col), None),
-            }
-            logger.info(f"Column mapping: {column_mapping}")
+        # LangChain prompt for SQL generation
+        prompt_template = PromptTemplate(
+            input_variables=["user_query", "columns"],
+            template=(
+                "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
+                "The table is named '{table_name}' and has the following columns: {columns}. "
+                "User request: '{user_query}'."
+            ),
+        )
 
-            missing_columns = [key for key, value in column_mapping.items() if value is None]
-            if missing_columns:
-                raise Exception(f"The following required columns are missing from your data: {', '.join(missing_columns)}")
-
-            return f"""
-                SELECT {column_mapping['post_title']} AS post_title,
-                       {column_mapping['posted_by']} AS posted_by,
-                       {column_mapping['post_link']} AS post_link,
-                       {column_mapping['likes']} AS likes
-                FROM {self.current_table}
-                ORDER BY {column_mapping['likes']} DESC
-                LIMIT 5;
-            """
-
-        if "year_month" not in available_columns and "date" not in available_columns:
-            if "monthly" in user_query.lower() or "quarterly" in user_query.lower():
-                raise Exception("The dataset does not contain 'year_month' or 'date' information for this analysis.")
-
-        # Default cases for queries like monthly or quarterly trends
-        if "monthly" in user_query.lower():
-            return f"""
-                SELECT year_month AS month, SUM(impressions_total) AS total_impressions 
-                FROM {self.current_table} 
-                GROUP BY year_month 
-                ORDER BY year_month;
-            """
-        elif "quarterly" in user_query.lower():
-            return f"""
-                SELECT quarter AS quarter, SUM(impressions_total) AS total_impressions 
-                FROM {self.current_table} 
-                GROUP BY quarter 
-                ORDER BY quarter;
-            """
-        else:
-            raise Exception("Unsupported query type. Adjust your query or ensure the dataset contains required columns.")
+        # Generate SQL using LangChain
+        chain = LLMChain(llm=self.llm, prompt=prompt_template)
+        sql_query = chain.run(user_query=user_query, columns=", ".join(available_columns), table_name=self.current_table)
+        logger.info(f"Generated SQL query: {sql_query}")
+        return sql_query
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
@@ -223,6 +201,7 @@ def main():
         st.markdown("""
         This app uses:
         - SQLite for data analysis
+        - OpenAI and LangChain for natural language to SQL translation
         - Plotly for visualizations
         - Streamlit for the UI
 
