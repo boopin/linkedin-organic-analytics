@@ -17,13 +17,15 @@ class DataAnalyzer:
         self.llm = ChatOpenAI(model="gpt-4")
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean column names, handle missing or invalid data, and create a 'month' column."""
+        """Clean column names, handle missing or invalid data, and create a 'month' column if applicable."""
         df.columns = [c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_') for c in df.columns]
 
-        # Parse the date column and create a 'month' column
+        # Parse the date column and create a 'month' column if 'date' exists
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
-            df['month'] = df['date'].dt.to_period('M').astype(str)  # Convert to YYYY-MM format
+            df['month'] = df['date'].dt.to_period('M').astype(str)
+        else:
+            logger.warning("No 'date' column found; skipping 'month' column generation.")
 
         # Drop entirely empty columns
         df = df.dropna(how='all', axis=1)
@@ -77,11 +79,20 @@ class DataAnalyzer:
         try:
             self.verify_table_existence()
             metric = self.extract_metric_from_query(user_query, df)
-            sql_query = self.generate_sql_with_gpt4(user_query, df).replace("table_name", self.current_table)
+            sql_query = self.generate_sql_with_gpt4(user_query, df).replace("your_data_table", self.current_table).replace("[Table]", self.current_table)
+            logger.info(f"Generated SQL query: {sql_query}")
+
+            # Execute the generated query
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
-            # Fallback query with dynamic column handling
+            logger.error(f"Primary query failed: {e}")
+            
+            # Handle time-based query failures gracefully
+            if "month" in user_query.lower() and "month" not in df.columns:
+                raise ValueError("The dataset does not have a 'month' or 'date' column required for time-based queries.")
+
+            # Dynamic fallback query for non-time-based queries
             if not metric:
                 numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
                 if numeric_columns:
@@ -89,9 +100,9 @@ class DataAnalyzer:
                 else:
                     raise Exception("No numeric columns available for fallback query.")
 
-            # Ensure fallback query uses dataset-compatible columns
             try:
-                fallback_query = f"SELECT month, SUM({metric}) AS total_{metric} FROM {self.current_table} WHERE month IN ('2024-07', '2024-08') GROUP BY month;"
+                fallback_query = f"SELECT post_title, post_link, post_type, {metric} FROM {self.current_table} ORDER BY {metric} DESC LIMIT 5;"
+                logger.info(f"Using fallback query: {fallback_query}")
                 df_result = pd.read_sql_query(fallback_query, self.conn)
                 return df_result, fallback_query
             except Exception as fallback_error:
@@ -105,7 +116,7 @@ class DataAnalyzer:
                 return word
         numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
         if numeric_columns:
-            return numeric_columns[0]  # Default to the first numeric column
+            return numeric_columns[0]
         raise ValueError("Requested metric not found in the dataset and no numeric columns available.")
 
     def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
@@ -140,23 +151,17 @@ def main():
         st.stop()
 
     if uploaded_file.name.endswith('xlsx'):
-        # Load the Excel file
         excel_file = pd.ExcelFile(uploaded_file)
         sheet_names = excel_file.sheet_names
-
-        # Provide a dropdown if multiple sheets are available
         sheet_name = st.selectbox("Select the sheet to analyze", sheet_names)
-
-        # Read the selected sheet
         df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
     else:
         df = pd.read_csv(uploaded_file)
 
     success, schema_info = st.session_state.analyzer.load_data(df)
-
     if success:
         st.success("Data loaded successfully!")
-        user_query = st.text_area("Enter your query", placeholder="Show me total impressions per month for August vs July.")
+        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by clicks.")
         if st.button("Analyze"):
             try:
                 with st.spinner("Analyzing your data..."):
