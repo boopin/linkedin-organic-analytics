@@ -24,11 +24,12 @@ class DataAnalyzer:
         self.conn = st.session_state.db_conn
         self.current_table = None
         self.llm = OpenAI(temperature=0)  # LangChain LLM setup
+        logger.info("DataAnalyzer initialized.")
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and compute derived columns."""
         try:
-            # Load data
+            logger.info("Loading data...")
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file)
             else:
@@ -45,7 +46,7 @@ class DataAnalyzer:
 
             # Check and process the date column
             if 'date' in df.columns:
-                # Parse date with MM/DD/YYYY format
+                logger.info("Processing date column...")
                 df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
                 if not df['date'].isnull().all():
                     # Compute derived time-based fields
@@ -58,6 +59,7 @@ class DataAnalyzer:
             else:
                 raise ValueError("The dataset is missing a 'date' column.")
 
+            logger.info("Saving processed data to SQLite...")
             # Save the processed dataset into SQLite
             self.current_table = 'data_table'
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
@@ -65,6 +67,7 @@ class DataAnalyzer:
             # Return schema information for user feedback
             cursor = self.conn.cursor()
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
+            logger.info("Data loaded successfully.")
             return True, self.format_schema_info(schema_info)
 
         except Exception as e:
@@ -81,6 +84,7 @@ class DataAnalyzer:
         try:
             cursor = self.conn.cursor()
             columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+            logger.info(f"Fetched table columns: {columns}")
             return columns
         except Exception as e:
             logger.error(f"Error fetching table columns: {str(e)}")
@@ -89,6 +93,7 @@ class DataAnalyzer:
     def analyze(self, user_query: str, schema_info: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input"""
         try:
+            logger.info("Analyzing user query...")
             user_query = self.generate_monthly_filter(user_query)
             if "quarter" in user_query.lower():
                 user_query = user_query.replace(
@@ -104,13 +109,14 @@ class DataAnalyzer:
                 )
             sql_query = self.generate_sql_with_langchain(user_query, schema_info)
 
-            # Execute SQL and fetch results
+            logger.info(f"Executing SQL query: {sql_query}")
             df_result = pd.read_sql_query(sql_query, self.conn)
 
             # Verify if the query returned any data
             if df_result.empty:
                 raise Exception("The query returned no data. Ensure the dataset has relevant data for the requested period.")
 
+            logger.info("Analysis completed successfully.")
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {str(e)}")
@@ -130,6 +136,7 @@ class DataAnalyzer:
                 if "2023" in user_query:
                     year = "2023"
                 user_query = user_query.replace(month_name.capitalize(), f"{year}-{month_code}")
+        logger.info(f"User query after monthly filter mapping: {user_query}")
         return user_query
 
     def generate_sql_with_langchain(self, user_query: str, schema_info: str) -> str:
@@ -233,6 +240,7 @@ def main():
             run_analysis = st.sidebar.button("Run Quick Analysis")
 
             if run_analysis:
+                logger.info("Running quick analysis...")
                 if analysis_type == "Monthly":
                     sql_query = f"""
                     SELECT year_month, SUM({metric}) AS total_{metric}
@@ -277,6 +285,7 @@ def main():
                     """
                 try:
                     df_result = pd.read_sql_query(sql_query, st.session_state.analyzer.conn)
+                    logger.info("Quick analysis executed successfully.")
                     st.write("### Quick Analysis Results")
                     st.dataframe(df_result)
 
@@ -286,6 +295,7 @@ def main():
                     st.plotly_chart(fig, use_container_width=True)
 
                 except Exception as e:
+                    logger.error(f"Error during quick analysis: {e}")
                     st.error(f"Error during analysis: {e}")
 
             # Analyze button
@@ -314,8 +324,10 @@ def main():
                                 st.code(sql_query, language='sql')
 
                     except Exception as e:
+                        logger.error(f"Error during analysis: {str(e)}")
                         st.error(f"Error during analysis: {str(e)}")
         else:
+            logger.error(f"Error loading data: {schema_info}")
             st.error(f"Error loading data: {schema_info}")
 
     # Sidebar
@@ -332,4 +344,5 @@ def main():
         """)
 
 if __name__ == "__main__":
+    logger.info("Starting the Streamlit application...")
     main()
