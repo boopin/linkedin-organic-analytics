@@ -142,7 +142,10 @@ class DataAnalyzer:
                 year = "2024"  # Default year if not specified
                 if "2023" in user_query:
                     year = "2023"
-                user_query = user_query.replace(month_name.capitalize(), f"{year}-{month_code}")
+                user_query = user_query.replace(
+                    month_name,
+                    f"{year}-{month_code}"
+                )
         logger.info(f"User query after monthly filter mapping: {user_query}")
         return user_query
 
