@@ -4,9 +4,7 @@ import sqlite3
 from typing import Tuple
 import logging
 from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
 from langchain.schema import HumanMessage
-from langchain.chains import LLMChain
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -16,10 +14,10 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = 'data_table'
-        self.llm = ChatOpenAI(model="gpt-3.5-turbo")
+        self.llm = ChatOpenAI(model="gpt-4")  # Use GPT-4 for dynamic query generation
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
-        """Load data from uploaded file into SQLite database and handle optional date-based processing."""
+        """Load data from uploaded file into SQLite database and process optional time-based fields."""
         try:
             # Load data
             if file.name.endswith('.csv'):
@@ -55,33 +53,25 @@ class DataAnalyzer:
         """Format schema information for display."""
         return "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
-    def generate_sql_with_langchain(self, user_query: str) -> str:
-        """Generate SQL query dynamically using LangChain and ChatOpenAI."""
+    def generate_sql_with_gpt4(self, user_query: str) -> str:
+        """Generate SQL query dynamically using GPT-4."""
         cursor = self.conn.cursor()
         available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
         logger.info(f"Available columns: {available_columns}")
 
-        # Define ChatLangChain prompt template
-        prompt_template = ChatPromptTemplate.from_messages([
-            HumanMessage(
-                content=(
-                    "You are an SQL expert. Generate a valid SQL SELECT query based on the user's request. "
-                    "The table is named 'data_table' and has the following columns: {columns}. "
-                    "User's request: {user_query}. "
-                    "The query must start with SELECT, use valid SQL syntax, and return the desired table. "
-                    "If ranking is required (e.g., top 5), use the ORDER BY clause."
-                )
-            )
-        ])
+        # Create the prompt for GPT-4
+        prompt = (
+            f"The table is named 'data_table' and has the following columns: {', '.join(available_columns)}. "
+            f"Based on the user's request, generate a valid SQL SELECT query. The query should start with SELECT, "
+            f"use valid SQL syntax, and return the desired result. Ensure the query matches the user's intent: {user_query}."
+        )
 
-        # Generate SQL query using LangChain
-        chain = LLMChain(llm=self.llm, prompt=prompt_template)
-        sql_query = chain.run({"user_query": user_query, "columns": ", ".join(available_columns)}).strip()
+        # Use GPT-4 to generate the query
+        response = self.llm([HumanMessage(content=prompt)])
+        sql_query = response.content.strip()
 
-        # Log the generated query
+        # Log and validate the query
         logger.info(f"Generated SQL query: {sql_query}")
-
-        # Validate the query
         if not sql_query.lower().startswith("select"):
             raise ValueError("Generated query is not a valid SELECT statement.")
 
@@ -90,9 +80,9 @@ class DataAnalyzer:
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
         """Perform analysis based on user query."""
         try:
-            # Generate the SQL query using LangChain
-            sql_query = self.generate_sql_with_langchain(user_query)
-            
+            # Generate the SQL query using GPT-4
+            sql_query = self.generate_sql_with_gpt4(user_query)
+
             # Execute the query
             df_result = pd.read_sql_query(sql_query, self.conn)
 
@@ -103,25 +93,12 @@ class DataAnalyzer:
             return df_result, sql_query
         except Exception as e:
             logger.error(f"Analysis error: {e}")
-
-            # Provide fallback query for top posts
-            fallback_query = (
-                "SELECT post_title, posted_by, post_type, post_link, likes "
-                "FROM data_table "
-                "ORDER BY likes DESC LIMIT 5;"
-            )
-            logger.info(f"Using fallback query: {fallback_query}")
-
-            try:
-                df_result = pd.read_sql_query(fallback_query, self.conn)
-                return df_result, fallback_query
-            except Exception as fallback_error:
-                logger.error(f"Fallback query also failed: {fallback_error}")
-                raise Exception("Analysis failed: Both primary and fallback queries failed.")
+            raise Exception("Analysis failed. Please refine your query or check your dataset.")
 
 def main():
     st.set_page_config(page_title="AI Data Analyzer", layout="wide")
     st.title("📊 AI-Powered Data Analyzer")
+    st.write("Upload your dataset and analyze it with GPT-4-driven insights!")
 
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
@@ -160,6 +137,13 @@ def main():
                     st.error(str(e))
         else:
             st.error(f"Error loading data: {schema_info}")
+
+    with st.sidebar:
+        st.header("ℹ️ About")
+        st.markdown("""
+        - Uses GPT-4 to dynamically analyze your data based on natural language queries.
+        - Provides insights without requiring complex configuration or fine-tuning.
+        """)
 
 if __name__ == "__main__":
     main()
