@@ -54,6 +54,8 @@ class DataAnalyzer:
                     df['year_month'] = df['date'].dt.to_period('M').astype(str)
                     df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
                     df['year'] = df['date'].dt.year.astype(str)
+                    df['week_start'] = df['date'] - pd.to_timedelta(df['date'].dt.weekday, unit='d')
+                    df['week_start'] = df['week_start'].dt.to_period('W').astype(str)
                 else:
                     raise ValueError("The 'date' column contains no valid dates. Please check the dataset format.")
             else:
@@ -64,8 +66,13 @@ class DataAnalyzer:
             self.current_table = 'data_table'
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
-            # Return schema information for user feedback
+            # Validate derived columns
             cursor = self.conn.cursor()
+            logger.info("Validating derived columns...")
+            distinct_quarters = cursor.execute(f"SELECT DISTINCT quarter FROM {self.current_table}").fetchall()
+            logger.info(f"Distinct quarters in the data: {distinct_quarters}")
+
+            # Return schema information for user feedback
             schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
             logger.info("Data loaded successfully.")
             return True, self.format_schema_info(schema_info)
@@ -271,10 +278,10 @@ def main():
                     """
                 elif analysis_type == "Weekly":
                     sql_query = f"""
-                    SELECT week, SUM({metric}) AS total_{metric}
+                    SELECT week_start, SUM({metric}) AS total_{metric}
                     FROM data_table
-                    GROUP BY week
-                    ORDER BY week;
+                    GROUP BY week_start
+                    ORDER BY week_start;
                     """
                 if compare and period1 and period2:
                     sql_query = f"""
