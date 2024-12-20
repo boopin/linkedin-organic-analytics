@@ -17,7 +17,7 @@ class DataAnalyzer:
     def __init__(self):
         self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.current_table = None
-        self.llm = OpenAI(model="text-davinci-003")  # Use your OpenAI key here
+        self.llm = OpenAI(model="gpt-3.5-turbo")  # Updated to a supported model
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and handle optional date-based processing."""
