@@ -53,13 +53,25 @@ class DynamicQueryParser:
 
     @staticmethod
     def preprocess_query(user_query: str) -> str:
-        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by", "in", "a", "table"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
+        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by", "in", "a", "table", "along"}
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words]
         return " ".join(query_terms)
+
+    @staticmethod
+    def map_composite_terms(mapped_query: str) -> str:
+        composite_mappings = {
+            "total impressions": "impressions_total",
+            "most clicks": "clicks_total"
+        }
+        for composite, column in composite_mappings.items():
+            if composite in mapped_query:
+                mapped_query = mapped_query.replace(composite, column)
+        return mapped_query
 
     @staticmethod
     def map_query_to_columns(user_query: str, df: pd.DataFrame) -> str:
         preprocessed_query = DynamicQueryParser.preprocess_query(user_query)
+        preprocessed_query = DynamicQueryParser.map_composite_terms(preprocessed_query)
         available_columns = [col.lower() for col in df.columns]
         mapped_query = preprocessed_query
 
@@ -93,7 +105,8 @@ class SQLQueryAgent:
         prompt = (
             f"Schema: {schema}\n"
             f"Query: {mapped_query}\n"
-            f"Generate a valid SQL query for SQLite. Use the table name 'data_table'."
+            f"Generate a valid SQL query for SQLite. Use the table name 'data_table'. "
+            f"Generic terms such as 'total', 'table', 'along' should not be interpreted as column names unless explicitly stated."
         )
         response = self.llm.invoke([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
@@ -127,9 +140,9 @@ class DataAnalyzer:
             result = pd.read_sql_query(sql_query, self.conn)
             return result, sql_query
         except ValueError as ve:
-            raise ValueError(f"Validation Error: {ve}\nQuery attempted: {user_query}")
+            raise ValueError(f"Validation Error: {ve}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
         except Exception as e:
-            raise Exception(f"Analysis Error: {str(e)}\nQuery attempted: {user_query}")
+            raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
 def main():
     st.title("AI Reports Analyzer")
