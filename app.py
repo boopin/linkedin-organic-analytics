@@ -6,13 +6,12 @@ from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
-# Configure logging with reduced verbosity
+# Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 class DataAnalyzer:
     def __init__(self):
-        """Do not initialize SQLite until a file is uploaded."""
         self.conn = None
         self.current_table = 'data_table'
         self.llm = ChatOpenAI(model="gpt-4")
@@ -31,8 +30,9 @@ class DataAnalyzer:
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
             df['month'] = df['date'].dt.to_period('M').astype(str)
+            df['quarter'] = df['date'].dt.to_period('Q').astype(str)
         else:
-            logger.warning("No 'date' column found; skipping 'month' column generation.")
+            logger.warning("No 'date' column found; skipping 'month' and 'quarter' column generation.")
 
         # Drop entirely empty columns
         df = df.dropna(how='all', axis=1)
@@ -51,6 +51,17 @@ class DataAnalyzer:
 
         return df
 
+    def extract_schema(self, df: pd.DataFrame) -> str:
+        """Extract schema (column names and data types) from the dataset."""
+        schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
+        schema_text = " | ".join(schema)
+        return schema_text
+
+    def validate_query(self, user_query: str, schema: str):
+        """Validate the query against the dataset schema."""
+        if "month" in user_query.lower() and "date" not in schema:
+            raise ValueError("This query requires a 'date' column, but the dataset does not include one.")
+
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """Load preprocessed DataFrame into SQLite database."""
         try:
@@ -66,72 +77,26 @@ class DataAnalyzer:
             processed_df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
             logger.info(f"Table '{self.current_table}' created successfully in SQLite.")
 
-            # Return schema information for user feedback
-            schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
-            return True, "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
+            # Extract schema for validation and dynamic querying
+            schema = self.extract_schema(processed_df)
+            return True, schema
         except Exception as e:
             logger.error(f"Error loading data into SQLite: {e}")
             return False, str(e)
 
-    def verify_table_existence(self):
-        """Check if the table exists in SQLite before querying."""
-        if not self.conn:
-            raise ValueError("SQLite database is not initialized. Please upload a valid dataset first.")
-        cursor = self.conn.cursor()
-        tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
-        logger.info(f"Existing tables in SQLite: {tables}")
-        if not tables or self.current_table not in [table[0] for table in tables]:
-            raise ValueError(f"The table '{self.current_table}' does not exist. Please upload a valid dataset.")
-
-    def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """Perform analysis based on user query."""
-        metric = None
-        try:
-            self.verify_table_existence()
-            metric = self.extract_metric_from_query(user_query, df)
-            sql_query = self.generate_sql_with_gpt4(user_query, df).replace("your_data_table", self.current_table).replace("[Table]", self.current_table)
-            logger.info(f"Generated SQL query: {sql_query}")
-
-            # Execute the generated query
-            df_result = pd.read_sql_query(sql_query, self.conn)
-            return df_result, sql_query
-        except Exception as e:
-            logger.error(f"Primary query failed: {e}")
-            
-            # Handle time-based query failures gracefully
-            if "month" in user_query.lower() and "month" not in df.columns:
-                raise ValueError("The dataset does not have a 'month' or 'date' column required for time-based queries.")
-
-            # Dynamic fallback query for non-time-based queries
-            if not metric:
-                numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
-                if numeric_columns:
-                    metric = numeric_columns[0]
-                else:
-                    raise Exception("No numeric columns available for fallback query.")
-
-            try:
-                fallback_query = f"SELECT post_title, post_link, post_type, {metric} FROM {self.current_table} ORDER BY {metric} DESC LIMIT 5;"
-                logger.info(f"Using fallback query: {fallback_query}")
-                df_result = pd.read_sql_query(fallback_query, self.conn)
-                return df_result, fallback_query
-            except Exception as fallback_error:
-                raise Exception(f"Analysis failed: {e}\nFallback query error: {fallback_error}")
-
-    def extract_metric_from_query(self, user_query: str, df: pd.DataFrame) -> str:
-        """Extract the ranking metric from the user's query."""
-        available_columns = [col.lower() for col in df.columns]
-        for word in user_query.lower().split():
-            if word in available_columns:
-                return word
-        numeric_columns = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
-        if numeric_columns:
-            return numeric_columns[0]
-        raise ValueError("Requested metric not found in the dataset and no numeric columns available.")
+    def generate_sql(self, user_query: str, schema: str, has_date: bool) -> str:
+        """Generate SQL query dynamically based on the user query and dataset schema."""
+        if has_date:
+            return (
+                f"SELECT strftime('%Y-%m', date) AS month, SUM(clicks) AS total_clicks "
+                f"FROM {self.current_table} GROUP BY month ORDER BY total_clicks DESC LIMIT 5;"
+            )
+        else:
+            return f"SELECT post_title, clicks FROM {self.current_table} ORDER BY clicks DESC LIMIT 5;"
 
     def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
         """Generate SQL query dynamically using GPT-4."""
-        schema = self.extract_schema_and_sample(df)
+        schema = self.extract_schema(df)
         prompt = (
             f"You are an expert in data analysis. Based on the following dataset schema and sample data, "
             f"generate a valid SQL query for a SQLite database that matches the user's intent.\n\n"
@@ -143,12 +108,42 @@ class DataAnalyzer:
             raise ValueError("Generated query is not a valid SELECT statement.")
         return sql_query
 
-    def extract_schema_and_sample(self, df: pd.DataFrame) -> str:
-        """Extract schema and sample data for GPT-4."""
-        schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
-        schema_description = " | ".join(schema)
-        sample_data = df.head(3).to_dict(orient="records")
-        return f"Schema: {schema_description}\nSample Data: {sample_data}"
+    def generate_insights(self, results: pd.DataFrame) -> str:
+        """Generate insights from SQL query results."""
+        if 'clicks' in results.columns:
+            top_clicks = results['clicks'].max()
+            avg_clicks = results['clicks'].mean()
+            return f"The top post had {top_clicks} clicks. The average clicks across posts were {avg_clicks:.2f}."
+        return "No actionable insights available for this dataset."
+
+    def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+        """Perform analysis based on user query."""
+        metric = None
+        try:
+            self.verify_table_existence()
+            schema = self.extract_schema(df)
+            self.validate_query(user_query, schema)
+
+            # Determine if dataset has a date column
+            has_date = 'date' in schema.lower()
+            sql_query = self.generate_sql(user_query, schema, has_date)
+            logger.info(f"Generated SQL query: {sql_query}")
+
+            # Execute the query
+            df_result = pd.read_sql_query(sql_query, self.conn)
+            return df_result, sql_query
+        except Exception as e:
+            raise Exception(f"Analysis failed: {e}")
+
+    def verify_table_existence(self):
+        """Check if the table exists in SQLite before querying."""
+        if not self.conn:
+            raise ValueError("SQLite database is not initialized. Please upload a valid dataset first.")
+        cursor = self.conn.cursor()
+        tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+        logger.info(f"Existing tables in SQLite: {tables}")
+        if not tables or self.current_table not in [table[0] for table in tables]:
+            raise ValueError(f"The table '{self.current_table}' does not exist. Please upload a valid dataset.")
 
 def main():
     st.title("AI Data Analyzer")
@@ -176,8 +171,11 @@ def main():
             try:
                 with st.spinner("Analyzing your data..."):
                     result, query = st.session_state.analyzer.analyze(user_query, df)
+                    insights = st.session_state.analyzer.generate_insights(result)
                 st.write("**Analysis Result:**")
                 st.dataframe(result)
+                st.write("**Generated Insights:**")
+                st.write(insights)
                 st.write("**SQL Query Used:**")
                 st.code(query, language='sql')
             except Exception as e:
