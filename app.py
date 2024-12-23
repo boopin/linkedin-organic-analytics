@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import logging
-from typing import Tuple
+import plotly.express as px
 from langchain_openai.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
+import logging
 import difflib
 import re
 
@@ -12,7 +12,6 @@ import re
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Example queries for user guidance
 EXAMPLE_QUERIES = [
     "Show me the top 5 dates with the highest total impressions.",
     "Show me the posts with the most clicks.",
@@ -21,62 +20,51 @@ EXAMPLE_QUERIES = [
 ]
 
 class PreprocessingPipeline:
-    """Preprocesses the dataset for normalization and error correction."""
     @staticmethod
     def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names by removing special characters and spaces."""
         df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
         return df
 
     @staticmethod
     def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect and fill missing dates if possible."""
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
         return df
 
     @staticmethod
     def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
-        """Fix Arrow serialization errors by converting incompatible columns."""
         for col in df.select_dtypes(include=["datetime", "object"]).columns:
             df[col] = df[col].astype("string", errors="ignore")
         return df
 
     @staticmethod
     def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
-        """Run the full preprocessing pipeline."""
         df = PreprocessingPipeline.clean_column_names(df)
         df = PreprocessingPipeline.handle_missing_dates(df)
         df = PreprocessingPipeline.fix_arrow_incompatibility(df)
         return df
 
 class DynamicQueryParser:
-    """Handles dynamic query parsing and mapping with singular/plural handling."""
     @staticmethod
     def singularize_term(term: str) -> str:
-        """Convert plural terms to singular if applicable."""
         if term.endswith("s"):
             return term[:-1]
         return term
 
     @staticmethod
     def preprocess_query(user_query: str) -> str:
-        """Preprocess query to remove filler words and focus on meaningful terms."""
         filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
         query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
         return " ".join(query_terms)
 
     @staticmethod
     def map_query_to_columns(user_query: str, df: pd.DataFrame) -> str:
-        """Map query terms to actual dataset columns using singularization and fuzzy matching."""
         preprocessed_query = DynamicQueryParser.preprocess_query(user_query)
         available_columns = [col.lower() for col in df.columns]
         mapped_query = preprocessed_query
 
         for term in preprocessed_query.split():
-            # Singularize the term
             singular_term = DynamicQueryParser.singularize_term(term)
-            # Perform fuzzy matching
             match = difflib.get_close_matches(singular_term, available_columns, n=1, cutoff=0.6)
             if match:
                 actual_column = df.columns[available_columns.index(match[0])]
@@ -86,7 +74,6 @@ class DynamicQueryParser:
 
     @staticmethod
     def validate_query(mapped_query: str, df: pd.DataFrame):
-        """Validate if all referenced columns exist in the dataset."""
         referenced_columns = re.findall(r"[a-zA-Z0-9_]+", mapped_query)
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
@@ -96,17 +83,13 @@ class DynamicQueryParser:
             )
 
 class SQLQueryAgent:
-    """Handles SQL query generation."""
     def __init__(self, llm):
         self.llm = llm
 
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
-        """Generate SQL query using GPT-4 with dynamic query parsing."""
-        # Dynamically map and validate the query
         mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
         DynamicQueryParser.validate_query(mapped_query, df)
 
-        # Generate SQL query
         prompt = (
             f"Schema: {schema}\n"
             f"Query: {mapped_query}\n"
@@ -114,24 +97,20 @@ class SQLQueryAgent:
         )
         response = self.llm.invoke([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
-
         sql_query = sql_query.replace("TABLENAME", "data_table").replace("table_name", "data_table")
         logger.warning(f"Generated SQL query: {sql_query}")
         return sql_query
 
 class DataAnalyzer:
-    """Analyzes data using SQLite and AI."""
     def __init__(self):
         self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.llm = ChatOpenAI(model="gpt-4")
         self.sql_agent = SQLQueryAgent(self.llm)
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Run preprocessing pipeline."""
         return PreprocessingPipeline.preprocess_data(df)
 
-    def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load dataset into SQLite."""
+    def load_data(self, df: pd.DataFrame):
         try:
             df = self.preprocess_data(df)
             df.to_sql("data_table", self.conn, index=False, if_exists="replace")
@@ -141,8 +120,7 @@ class DataAnalyzer:
             logger.error(f"Error loading data: {e}")
             return False, str(e)
 
-    def analyze(self, user_query: str, schema: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """Perform analysis."""
+    def analyze(self, user_query: str, schema: str, df: pd.DataFrame):
         mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
         sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
         result = pd.read_sql_query(sql_query, self.conn)
@@ -172,12 +150,9 @@ def main():
 
         st.success("Data loaded successfully!")
 
-        # Display schema dropdown
         st.write("### Dataset Schema")
         schema_columns = pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes})
-        selected_column = st.selectbox("Select a column to view details", schema_columns['Column'])
-        selected_details = schema_columns[schema_columns['Column'] == selected_column]
-        st.write("Details:", selected_details)
+        st.dataframe(schema_columns)
 
         st.write("### Example Queries")
         for query in EXAMPLE_QUERIES:
