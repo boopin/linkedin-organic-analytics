@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import logging
-from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
@@ -22,81 +21,92 @@ class DataAnalyzer:
             self.conn = sqlite3.connect(':memory:', check_same_thread=False)
             logger.info("SQLite database initialized.")
 
-    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Preprocess the dataset to clean columns and create time-based groupings."""
-        df.columns = [c.lower().strip().replace(' ', '_') for c in df.columns]
-
-        # Create time-based groupings if date exists
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-        else:
-            logger.warning("No 'date' column found; skipping date-based preprocessing.")
-        return df
+    def extract_schema(self, df: pd.DataFrame) -> str:
+        """Extract schema dynamically from the dataset."""
+        schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
+        return " | ".join(schema)
 
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load the preprocessed DataFrame into SQLite."""
+        """Load dataset into SQLite."""
         try:
             self.initialize_database()
-            df = self.preprocess_data(df)
+            # Clean column names for SQLite compatibility
+            df.columns = [c.lower().strip().replace(' ', '_') for c in df.columns]
+
+            # Drop existing table
             cursor = self.conn.cursor()
             cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
+
+            # Load the DataFrame into SQLite
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
-            schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
-            return True, " | ".join(schema)
+
+            # Extract schema for passing to GPT-4
+            schema = self.extract_schema(df)
+            return True, schema
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
             return False, str(e)
 
-    def extract_metric_from_query(self, user_query: str, df: pd.DataFrame) -> str:
-        """Extract metric dynamically from user query."""
-        query_keywords = user_query.lower().split()
-        available_columns = [col.lower() for col in df.columns]
-        for keyword in query_keywords:
-            if keyword in available_columns:
-                return keyword
-        raise ValueError(f"Metric not found in the dataset. Available columns: {', '.join(df.columns)}")
-
-    def generate_sql(self, user_query: str, df: pd.DataFrame) -> str:
-        """Generate SQL dynamically based on dataset schema and user query."""
-        metric = self.extract_metric_from_query(user_query, df)
-        if 'date' in df.columns:
-            return (
-                f"SELECT date, SUM({metric}) AS total_{metric} "
-                f"FROM {self.current_table} "
-                f"GROUP BY date "
-                f"ORDER BY total_{metric} DESC LIMIT 5;"
-            )
-        else:
-            raise ValueError("This query requires a 'date' column, but the dataset does not include one.")
+    def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
+        """Generate SQL query dynamically using GPT-4."""
+        schema = self.extract_schema(df)
+        prompt = (
+            f"You are an expert SQL data analyst. Based on the following schema:\n\n"
+            f"{schema}\n\n"
+            f"Generate an SQL query that matches this user query:\n'{user_query}'. "
+            f"If the query is invalid or the dataset does not support it, explain why."
+        )
+        response = self.llm([HumanMessage(content=prompt)])
+        sql_query = response.content.strip()
+        if not sql_query.lower().startswith("select"):
+            raise ValueError("Generated query is not a valid SELECT statement.")
+        return sql_query
 
     def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """Perform SQL-based analysis dynamically."""
+        """Perform analysis with GPT-4 as the sole SQL generator."""
         try:
-            metric = self.extract_metric_from_query(user_query, df)
-            sql_query = self.generate_sql(user_query, df)
+            sql_query = self.generate_sql_with_gpt4(user_query, df)
+            logger.info(f"Generated SQL query: {sql_query}")
+
+            # Execute the SQL query
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
             raise Exception(f"Analysis failed: {e}")
 
 def main():
-    st.title("AI Data Analyzer")
+    st.title("Simplified AI Data Analyzer")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
+    # File upload functionality
     uploaded_file = st.file_uploader("Upload data (CSV or Excel)", type=['csv', 'xlsx'])
     if not uploaded_file:
+        st.info("Please upload a file to begin analysis.")
         st.stop()
 
+    # Load the dataset
     df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('xlsx') else pd.read_csv(uploaded_file)
     success, schema = st.session_state.analyzer.load_data(df)
 
     if success:
-        user_query = st.text_area("Enter your query")
+        st.success("Data loaded successfully!")
+        st.write(f"**Dataset Schema:** {schema}")
+        
+        # User query input
+        user_query = st.text_area("Enter your query", placeholder="e.g., Show me top 5 posts by clicks.")
         if st.button("Analyze"):
             try:
-                result, query = st.session_state.analyzer.analyze(user_query, df)
+                with st.spinner("Analyzing your data..."):
+                    result, query = st.session_state.analyzer.analyze(user_query, df)
+                st.write("**Analysis Result:**")
                 st.dataframe(result)
+                st.write("**SQL Query Used:**")
                 st.code(query, language='sql')
             except Exception as e:
-                st.error(e)
+                st.error(str(e))
+    else:
+        st.error(f"Failed to load data: {schema}")
+
+if __name__ == "__main__":
+    main()
