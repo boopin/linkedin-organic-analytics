@@ -18,7 +18,8 @@ COLUMN_MAPPING = {
     "total reactions": "reactions",
     "total comments": "comments",
     "total reposts": "reposts",
-    "engagement rate": "engagement_rate"
+    "engagement rate": "engagement_rate",
+    "date": "date"
 }
 
 class MetadataExtractionAgent:
@@ -52,7 +53,7 @@ class SQLQueryAgent:
 
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         """Converts a natural language query into SQL using GPT-4."""
-        # Validate columns before generating the SQL query
+        # Map columns dynamically using ColumnMappingAgent
         user_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
 
         # Generate the SQL query
