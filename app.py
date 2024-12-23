@@ -47,16 +47,13 @@ class PreprocessingPipeline:
         """Detect and fill missing dates if possible."""
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            if df["date"].isnull().any():
-                logger.warning("Some dates are missing or invalid. Filling with NaT.")
         return df
 
     @staticmethod
-    def aggregate_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate daily data into monthly if needed."""
-        if "date" in df.columns:
-            df["month"] = df["date"].dt.to_period("M").astype(str)
-            return df.groupby("month").sum().reset_index()
+    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
+        """Fix Arrow serialization errors by converting incompatible columns."""
+        for col in df.select_dtypes(include=["datetime", "object"]).columns:
+            df[col] = df[col].astype("string", errors="ignore")
         return df
 
     @staticmethod
@@ -64,6 +61,7 @@ class PreprocessingPipeline:
         """Run the full preprocessing pipeline."""
         df = PreprocessingPipeline.clean_column_names(df)
         df = PreprocessingPipeline.handle_missing_dates(df)
+        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
         return df
 
 class ColumnMappingAgent:
