@@ -1,4 +1,4 @@
-# App Version: 1.0.2
+# App Version: 1.0.3
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -118,10 +118,13 @@ class SQLQueryAgent:
 
         # Updated function call parameter to 'auto'
         response = self.llm.invoke(
-            [HumanMessage(content=user_query)],
+            [HumanMessage(content=f"Schema: {schema}. User query: {user_query}. Generate a valid SQL query using the table 'data_table'.")],
             functions=[function_call_prompt],
             function_call="auto"
         )
+
+        # Log raw response for debugging
+        logger.warning(f"Raw LLM Response: {response}")
 
         # Correctly parse AIMessage content
         if isinstance(response, AIMessage):
@@ -169,7 +172,7 @@ class DataAnalyzer:
             raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
 def main():
-    st.title("AI Reports Analyzer (Version 1.0.2)")
+    st.title("AI Reports Analyzer (Version 1.0.3)")
     analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
