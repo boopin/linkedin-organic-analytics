@@ -12,20 +12,6 @@ import re
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Column mapping for user-friendly queries
-COLUMN_MAPPING = {
-    "total impressions": ["impressions", "total impressions", "impressions_(total)"],
-    "total clicks": ["clicks", "total clicks", "clicks_(total)"],
-    "posts": ["post_title"],
-    "most clicks": ["clicks"],
-    "clicks": ["clicks", "click_through_rate_(ctr)"],
-    "total likes": ["likes", "total likes"],
-    "total comments": ["comments", "total comments"],
-    "total reposts": ["reposts", "total reposts"],
-    "engagement rate": ["engagement_rate", "engagement rate"],
-    "date": ["date", "dates"]
-}
-
 # Example queries for user guidance
 EXAMPLE_QUERIES = [
     "Show me the top 5 dates with the highest total impressions.",
@@ -64,15 +50,8 @@ class PreprocessingPipeline:
         df = PreprocessingPipeline.fix_arrow_incompatibility(df)
         return df
 
-class ColumnMappingAgent:
-    """Handles dynamic mapping of user terms to dataset column names."""
-    @staticmethod
-    def preprocess_query(user_query: str) -> str:
-        """Preprocess query to remove filler words and focus on meaningful terms."""
-        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
-        return " ".join(query_terms)
-
+class DynamicQueryParser:
+    """Handles dynamic query parsing and mapping with singular/plural handling."""
     @staticmethod
     def singularize_term(term: str) -> str:
         """Convert plural terms to singular if applicable."""
@@ -81,24 +60,33 @@ class ColumnMappingAgent:
         return term
 
     @staticmethod
-    def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
-        """Map user-friendly terms to actual dataset columns."""
-        preprocessed_query = ColumnMappingAgent.preprocess_query(user_query)
+    def preprocess_query(user_query: str) -> str:
+        """Preprocess query to remove filler words and focus on meaningful terms."""
+        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
+        return " ".join(query_terms)
+
+    @staticmethod
+    def map_query_to_columns(user_query: str, df: pd.DataFrame) -> str:
+        """Map query terms to actual dataset columns using singularization and fuzzy matching."""
+        preprocessed_query = DynamicQueryParser.preprocess_query(user_query)
         available_columns = [col.lower() for col in df.columns]
         mapped_query = preprocessed_query
-        for user_term, synonyms in column_mapping.items():
-            for synonym in synonyms:
-                synonym = ColumnMappingAgent.singularize_term(synonym)
-                match = difflib.get_close_matches(synonym.lower(), available_columns, n=1, cutoff=0.6)
-                if match:
-                    actual_column = df.columns[available_columns.index(match[0])]
-                    mapped_query = mapped_query.replace(user_term, actual_column)
-                    break
+
+        for term in preprocessed_query.split():
+            # Singularize the term
+            singular_term = DynamicQueryParser.singularize_term(term)
+            # Perform fuzzy matching
+            match = difflib.get_close_matches(singular_term, available_columns, n=1, cutoff=0.6)
+            if match:
+                actual_column = df.columns[available_columns.index(match[0])]
+                mapped_query = mapped_query.replace(term, actual_column)
+
         return mapped_query
 
     @staticmethod
-    def validate_query_columns(mapped_query: str, df: pd.DataFrame):
-        """Validate if all referenced columns in the query exist in the dataset."""
+    def validate_query(mapped_query: str, df: pd.DataFrame):
+        """Validate if all referenced columns exist in the dataset."""
         referenced_columns = re.findall(r"[a-zA-Z0-9_]+", mapped_query)
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
@@ -112,17 +100,13 @@ class SQLQueryAgent:
     def __init__(self, llm):
         self.llm = llm
 
-    def preprocess_query(self, user_query: str, column_mapping: dict, df: pd.DataFrame) -> str:
-        """Preprocess and map columns in the query."""
-        mapped_query = ColumnMappingAgent.map_columns(user_query, df, column_mapping)
-        ColumnMappingAgent.validate_query_columns(mapped_query, df)
-        return mapped_query
-
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
-        """Generate SQL query using GPT-4."""
-        mapped_query = self.preprocess_query(user_query, COLUMN_MAPPING, df)
+        """Generate SQL query using GPT-4 with dynamic query parsing."""
+        # Dynamically map and validate the query
+        mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
+        DynamicQueryParser.validate_query(mapped_query, df)
 
-        # Generate the SQL query
+        # Generate SQL query
         prompt = (
             f"Schema: {schema}\n"
             f"Query: {mapped_query}\n"
@@ -159,7 +143,7 @@ class DataAnalyzer:
 
     def analyze(self, user_query: str, schema: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis."""
-        mapped_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
+        mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
         sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
         result = pd.read_sql_query(sql_query, self.conn)
         return result, sql_query
