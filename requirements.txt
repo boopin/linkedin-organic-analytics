@@ -1,18 +1,10 @@
-# Core dependencies
 streamlit>=1.31.0
 pandas>=2.2.0
 numpy>=1.26.0
-
-# LangChain and OpenAI
-langchain-openai>=0.2.14
 openai>=1.12.0
-
-# Database and Utilities
 sqlalchemy>=2.0.36
+langchain-openai>=0.2.14
 python-dotenv>=1.0.0
-
-# Excel support
+plotly>=5.24.0
 openpyxl>=3.1.5
 
-# Plotting and Visualization
-plotly>=5.24.0
