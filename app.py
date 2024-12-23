@@ -54,7 +54,7 @@ class DynamicQueryParser:
     @staticmethod
     def preprocess_query(user_query: str) -> str:
         filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by", "in", "a", "table", "along"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words]
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isdigit()]
         return " ".join(query_terms)
 
     @staticmethod
@@ -86,7 +86,7 @@ class DynamicQueryParser:
 
     @staticmethod
     def validate_query(mapped_query: str, df: pd.DataFrame):
-        referenced_columns = re.findall(r"[a-zA-Z0-9_]+", mapped_query)
+        referenced_columns = re.findall(r"[a-zA-Z_]+", mapped_query)  # Ignore numbers in column validation
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(
@@ -98,21 +98,44 @@ class SQLQueryAgent:
     def __init__(self, llm):
         self.llm = llm
 
+    def generate_sql_with_function_calling(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
+        """Generate SQL query using OpenAI function calling."""
+        available_columns = [col for col in df.columns]
+
+        def sql_generation_function(query: str, columns: list):
+            """Structured function for SQL query generation."""
+            if any(term not in columns for term in query.split()):
+                raise ValueError("Query references non-existent columns.")
+            # Example implementation (this would be enhanced with LLM)
+            return f"SELECT * FROM data_table WHERE {query}"
+
+        function_call_prompt = {
+            "name": "sql_generation",
+            "description": "Generate an SQL query for the given schema and user query.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "columns": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["query", "columns"]
+            }
+        }
+
+        response = self.llm.invoke(
+            [HumanMessage(content=user_query)],
+            functions=[function_call_prompt],
+            function_call="sql_generation"
+        )
+
+        sql_query = response.get("content", {}).get("query", "")
+        return sql_query
+
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
         DynamicQueryParser.validate_query(mapped_query, df)
 
-        prompt = (
-            f"Schema: {schema}\n"
-            f"Query: {mapped_query}\n"
-            f"Generate a valid SQL query for SQLite. Use the table name 'data_table'. "
-            f"Generic terms such as 'total', 'table', 'along' should not be interpreted as column names unless explicitly stated."
-        )
-        response = self.llm.invoke([HumanMessage(content=prompt)])
-        sql_query = response.content.strip()
-        sql_query = sql_query.replace("TABLENAME", "data_table").replace("table_name", "data_table")
-        logger.warning(f"Generated SQL query: {sql_query}")
-        return sql_query
+        return self.generate_sql_with_function_calling(mapped_query, schema, df)
 
 class DataAnalyzer:
     def __init__(self):
