@@ -6,7 +6,6 @@ from typing import Tuple
 from langchain_openai.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 import difflib
-import plotly.express as px
 import re
 
 # Configure logging
@@ -15,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 # Column mapping for user-friendly queries
 COLUMN_MAPPING = {
-    "total impressions": ["impressions", "total impressions"],
-    "total clicks": ["clicks", "total clicks"],
+    "total impressions": ["impressions", "total impressions", "impressions_(total)"],
+    "total clicks": ["clicks", "total clicks", "clicks_(total)"],
     "total likes": ["likes", "total likes"],
     "total comments": ["comments", "total comments"],
     "total reposts": ["reposts", "total reposts"],
@@ -38,27 +37,26 @@ class ColumnMappingAgent:
     def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
         """Map user-friendly terms to actual dataset columns using fuzzy matching."""
         available_columns = [col.lower() for col in df.columns]
+        updated_query = user_query.lower()
         for user_term, synonyms in column_mapping.items():
             for synonym in synonyms:
                 match = difflib.get_close_matches(synonym.lower(), available_columns, n=1, cutoff=0.6)
                 if match:
                     actual_column = df.columns[available_columns.index(match[0])]
-                    user_query = user_query.replace(user_term, actual_column)
-                    return user_query
-        raise ValueError(
-            f"The user query references '{user_term}' which could not be mapped to any existing columns. "
-            f"Available columns: {list(df.columns)}"
-        )
+                    updated_query = updated_query.replace(user_term, actual_column)
+                    break
+        return updated_query
 
-def validate_columns(user_query: str, df: pd.DataFrame):
-    """Validate that all columns referenced in the query exist in the dataset."""
-    referenced_columns = re.findall(r"[a-zA-Z0-9_]+", user_query)
-    missing_columns = [col for col in referenced_columns if col not in df.columns]
-    if missing_columns:
-        raise ValueError(
-            f"The following columns referenced in the query do not exist in the dataset: {', '.join(missing_columns)}. "
-            f"Available columns: {list(df.columns)}"
-        )
+    @staticmethod
+    def validate_query_columns(mapped_query: str, df: pd.DataFrame):
+        """Validate if all referenced columns in the query exist in the dataset."""
+        referenced_columns = re.findall(r"[a-zA-Z0-9_()]+", mapped_query)
+        missing_columns = [col for col in referenced_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(
+                f"The following columns referenced in the query do not exist in the dataset: {', '.join(missing_columns)}. "
+                f"Available columns: {list(df.columns)}"
+            )
 
 class SQLQueryAgent:
     """Handles SQL query generation."""
@@ -67,13 +65,13 @@ class SQLQueryAgent:
 
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         """Generate SQL query using GPT-4."""
-        user_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
-        validate_columns(user_query, df)
+        mapped_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
+        ColumnMappingAgent.validate_query_columns(mapped_query, df)
 
         # Generate the SQL query
         prompt = (
             f"Schema: {schema}\n"
-            f"Query: {user_query}\n"
+            f"Query: {mapped_query}\n"
             f"Generate a valid SQL query for SQLite. Use the table name 'data_table'."
         )
         response = self.llm.invoke([HumanMessage(content=prompt)])
@@ -110,30 +108,13 @@ class DataAnalyzer:
 
     def analyze(self, user_query: str, schema: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis."""
-        user_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
-        sql_query = self.sql_agent.generate_sql(user_query, schema, df)
+        mapped_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
+        sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
         result = pd.read_sql_query(sql_query, self.conn)
         return result, sql_query
 
-def create_plot(df: pd.DataFrame, x: str, y: str, chart_type: str):
-    """Create a Plotly chart."""
-    if chart_type == "Bar":
-        fig = px.bar(df, x=x, y=y, title=f"{y} vs {x}")
-    elif chart_type == "Line":
-        fig = px.line(df, x=x, y=y, title=f"{y} vs {x}")
-    elif chart_type == "Scatter":
-        fig = px.scatter(df, x=x, y=y, title=f"{y} vs {x}", size=y, hover_data=df.columns)
-    else:
-        fig = px.histogram(df, x=x, title=f"Distribution of {x}")
-    return fig
-
-def is_visualization_request(query: str) -> bool:
-    """Check if the query requests a visualization."""
-    visualization_keywords = ["graph", "chart", "visualize", "bar graph", "scatter plot"]
-    return any(keyword in query.lower() for keyword in visualization_keywords)
-
 def main():
-    st.title("Social Media Analytics Tool")
+    st.title("AI Reports Analyzer")
     analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
@@ -155,21 +136,14 @@ def main():
             return
 
         st.success("Data loaded successfully!")
-
-        # Display schema dropdown
-        schema_columns = schema.split(", ")
         st.write("### Dataset Schema")
-        schema_selection = st.selectbox("Select a column to view details", schema_columns)
+        st.dataframe(pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes}))
 
-        # Show example queries
         st.write("### Example Queries")
         for query in EXAMPLE_QUERIES:
             st.markdown(f"- {query}")
 
-        # User query input
         user_query = st.text_input("Enter your query")
-        generate_chart = is_visualization_request(user_query)
-
         if st.button("Analyze"):
             try:
                 result, sql_query = analyzer.analyze(user_query, schema, df)
@@ -177,21 +151,10 @@ def main():
                 st.dataframe(result)
                 st.write("**SQL Query Used:**")
                 st.code(sql_query, language="sql")
+            except ValueError as ve:
+                st.error(f"Validation Error: {ve}")
             except Exception as e:
                 st.error(f"Error: {e}")
-
-        # Show visualization options if requested in the query
-        if generate_chart:
-            st.write("### Generate Visualization")
-            x_axis = st.selectbox("Select X-axis", options=df.columns)
-            y_axis = st.selectbox("Select Y-axis", options=df.columns)
-            chart_type = st.selectbox("Select Chart Type", ["Bar", "Line", "Scatter", "Histogram"])
-            if st.button("Generate Chart"):
-                try:
-                    fig = create_plot(df, x=x_axis, y=y_axis, chart_type=chart_type)
-                    st.plotly_chart(fig)
-                except Exception as e:
-                    st.error(f"Error generating chart: {e}")
 
     except Exception as e:
         st.error(f"Failed to process file: {e}")
