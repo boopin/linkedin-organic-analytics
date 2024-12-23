@@ -4,58 +4,42 @@ import sqlite3
 import logging
 from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
+from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.schema import HumanMessage
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-class DataAnalyzer:
-    def __init__(self):
-        self.conn = None
-        self.current_table = 'data_table'
-        self.llm = ChatOpenAI(model="gpt-4")
-
-    def initialize_database(self):
-        """Initialize SQLite database only when required."""
-        if not self.conn:
-            self.conn = sqlite3.connect(':memory:', check_same_thread=False)
-            logger.info("SQLite database initialized.")
-
-    def extract_schema(self, df: pd.DataFrame) -> str:
-        """Extract schema dynamically from the dataset."""
+class MetadataExtractionAgent:
+    """Extracts schema and metadata from the dataset."""
+    @staticmethod
+    def extract_schema(df: pd.DataFrame) -> str:
         schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
         return " | ".join(schema)
 
-    def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load dataset into SQLite."""
-        try:
-            self.initialize_database()
-            # Clean column names for SQLite compatibility
-            df.columns = [c.lower().strip().replace(' ', '_') for c in df.columns]
 
-            # Drop existing table
-            cursor = self.conn.cursor()
-            cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
+class DataValidationAgent:
+    """Validates dataset compatibility with user queries."""
+    @staticmethod
+    def validate_schema(df: pd.DataFrame, required_columns: list) -> None:
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"The dataset is missing required columns: {', '.join(missing_columns)}")
 
-            # Load the DataFrame into SQLite
-            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
 
-            # Extract schema for passing to GPT-4
-            schema = self.extract_schema(df)
-            return True, schema
-        except Exception as e:
-            logger.error(f"Failed to load data: {e}")
-            return False, str(e)
+class SQLQueryAgent:
+    """Generates SQL queries dynamically using GPT-4."""
+    def __init__(self, llm):
+        self.llm = llm
 
-    def generate_sql_with_gpt4(self, user_query: str, df: pd.DataFrame) -> str:
-        """Generate SQL query dynamically using GPT-4."""
-        schema = self.extract_schema(df)
+    def generate_sql(self, user_query: str, schema: str) -> str:
         prompt = (
             f"You are an expert SQL data analyst. Based on the following schema:\n\n"
             f"{schema}\n\n"
-            f"Generate an SQL query that matches this user query:\n'{user_query}'. "
-            f"If the query is invalid or the dataset does not support it, explain why."
+            f"Generate an SQL query for a SQLite database that matches this user query:\n"
+            f"'{user_query}'. Ensure the query uses appropriate SQL functions for time-based analysis "
+            f"if the query references dates. If the query cannot be executed, explain why."
         )
         response = self.llm([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
@@ -63,24 +47,64 @@ class DataAnalyzer:
             raise ValueError("Generated query is not a valid SELECT statement.")
         return sql_query
 
-    def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """Perform analysis with GPT-4 as the sole SQL generator."""
-        try:
-            sql_query = self.generate_sql_with_gpt4(user_query, df)
-            logger.info(f"Generated SQL query: {sql_query}")
 
-            # Execute the SQL query
+class InsightsGenerationAgent:
+    """Generates insights from SQL query results."""
+    @staticmethod
+    def generate_insights(results: pd.DataFrame) -> str:
+        if 'clicks' in results.columns:
+            top_clicks = results['clicks'].max()
+            avg_clicks = results['clicks'].mean()
+            return f"The top post had {top_clicks} clicks. The average clicks across posts were {avg_clicks:.2f}."
+        return "No actionable insights available for this dataset."
+
+
+class DataAnalyzer:
+    def __init__(self):
+        self.conn = None
+        self.current_table = 'data_table'
+        self.llm = ChatOpenAI(model="gpt-4")
+        self.sql_agent = SQLQueryAgent(self.llm)
+
+    def initialize_database(self):
+        """Initialize SQLite database only when required."""
+        if not self.conn:
+            self.conn = sqlite3.connect(':memory:', check_same_thread=False)
+            logger.info("SQLite database initialized.")
+
+    def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
+        """Load dataset into SQLite."""
+        try:
+            self.initialize_database()
+            df.columns = [c.lower().strip().replace(' ', '_') for c in df.columns]
+            cursor = self.conn.cursor()
+            cursor.execute(f"DROP TABLE IF EXISTS {self.current_table}")
+            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+            schema = MetadataExtractionAgent.extract_schema(df)
+            return True, schema
+        except Exception as e:
+            logger.error(f"Failed to load data: {e}")
+            return False, str(e)
+
+    def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+        """Perform analysis with AI agents."""
+        try:
+            # Extract schema and validate
+            schema = MetadataExtractionAgent.extract_schema(df)
+            DataValidationAgent.validate_schema(df, required_columns=['date', 'total_impressions'])
+
+            # Generate SQL query
+            sql_query = self.sql_agent.generate_sql(user_query, schema)
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
             raise Exception(f"Analysis failed: {e}")
 
 def main():
-    st.title("Simplified AI Data Analyzer")
+    st.title("AI Data Analyzer with Agents")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
-    # File upload functionality
     uploaded_file = st.file_uploader("Upload data (CSV or Excel)", type=['csv', 'xlsx'])
     if not uploaded_file:
         st.info("Please upload a file to begin analysis.")
@@ -95,21 +119,21 @@ def main():
     else:
         df = pd.read_csv(uploaded_file)
 
-    # Load the dataset into SQLite
     success, schema = st.session_state.analyzer.load_data(df)
-
     if success:
         st.success("Data loaded successfully!")
         st.write(f"**Dataset Schema:** {schema}")
         
-        # User query input
-        user_query = st.text_area("Enter your query", placeholder="e.g., Show me top 5 posts by clicks.")
+        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by clicks.")
         if st.button("Analyze"):
             try:
                 with st.spinner("Analyzing your data..."):
                     result, query = st.session_state.analyzer.analyze(user_query, df)
+                    insights = InsightsGenerationAgent.generate_insights(result)
                 st.write("**Analysis Result:**")
                 st.dataframe(result)
+                st.write("**Generated Insights:**")
+                st.write(insights)
                 st.write("**SQL Query Used:**")
                 st.code(query, language='sql')
             except Exception as e:
