@@ -137,6 +137,12 @@ def main():
 
     try:
         if uploaded_file.name.endswith(".xlsx"):
+            try:
+                import openpyxl
+            except ImportError:
+                st.error("Missing dependency: openpyxl. Please install it using 'pip install openpyxl'.")
+                return
+
             excel_file = pd.ExcelFile(uploaded_file)
             sheet_name = st.selectbox("Select Sheet", excel_file.sheet_names)
             df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
