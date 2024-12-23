@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 COLUMN_MAPPING = {
     "total impressions": ["impressions", "total impressions", "impressions_(total)"],
     "total clicks": ["clicks", "total clicks", "clicks_(total)"],
+    "posts": ["post_title"],
+    "most clicks": ["clicks"],
+    "clicks": ["clicks", "click_through_rate_(ctr)"],
     "total likes": ["likes", "total likes"],
     "total comments": ["comments", "total comments"],
     "total reposts": ["reposts", "total reposts"],
@@ -36,8 +39,8 @@ class ColumnMappingAgent:
     @staticmethod
     def preprocess_query(user_query: str) -> str:
         """Preprocess query to remove filler words and focus on meaningful terms."""
-        filler_words = {"show", "me", "the", "top", "with", "highest", "and", "or", "by"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words]
+        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
         return " ".join(query_terms)
 
     @staticmethod
