@@ -30,21 +30,6 @@ class MetadataExtractionAgent:
         return " | ".join(schema)
 
 
-class DataValidationAgent:
-    """Validates dataset compatibility with user queries."""
-    @staticmethod
-    def validate_schema(df: pd.DataFrame, required_columns: list) -> None:
-        available_columns = df.columns
-        missing_columns = []
-        
-        for col in required_columns:
-            if not any(difflib.get_close_matches(col, available_columns, n=1, cutoff=0.7)):
-                missing_columns.append(col)
-        
-        if missing_columns:
-            raise ValueError(f"The dataset is missing required columns: {', '.join(missing_columns)}")
-
-
 class SQLQueryAgent:
     """Generates SQL queries dynamically using GPT-4."""
     def __init__(self, llm):
@@ -58,26 +43,29 @@ class SQLQueryAgent:
         prompt = (
             f"You are an expert SQL data analyst. Based on the following schema:\n\n"
             f"{schema}\n\n"
-            f"Generate an SQL query for a SQLite database that matches this user query:\n"
-            f"'{user_query}'. Ensure the query uses appropriate SQL functions for time-based analysis "
-            f"if the query references dates. If the query cannot be executed, explain why."
+            f"Generate a valid SQL query for a SQLite database that matches this user query:\n"
+            f"'{user_query}'.\n"
+            f"Ensure the following:\n"
+            f"- If the query references dates, use appropriate SQL functions like `GROUP BY`.\n"
+            f"- Use `ORDER BY` to sort results by the metric specified in the query.\n"
+            f"- Return a valid `SELECT` statement. If the query cannot be executed, explain why."
         )
         response = self.llm([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
+        
+        # Log the generated query for debugging
+        logger.warning(f"Generated SQL query: {sql_query}")
+        
         if not sql_query.lower().startswith("select"):
-            raise ValueError("Generated query is not a valid SELECT statement.")
+            explanation_prompt = (
+                f"The following SQL query could not be generated for this user query: '{user_query}'.\n\n"
+                f"The dataset schema is: {schema}.\n"
+                f"Explain why the query failed and suggest an alternative query."
+            )
+            explanation_response = self.llm([HumanMessage(content=explanation_prompt)])
+            raise ValueError(f"Query generation failed: {explanation_response.content.strip()}")
+        
         return sql_query
-
-
-class InsightsGenerationAgent:
-    """Generates insights from SQL query results."""
-    @staticmethod
-    def generate_insights(results: pd.DataFrame) -> str:
-        if 'impressions_(total)' in results.columns:
-            top_impressions = results['impressions_(total)'].max()
-            avg_impressions = results['impressions_(total)'].mean()
-            return f"The top date had {top_impressions} total impressions. The average impressions across dates were {avg_impressions:.2f}."
-        return "No actionable insights available for this dataset."
 
 
 class DataAnalyzer:
@@ -110,11 +98,7 @@ class DataAnalyzer:
     def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis with AI agents."""
         try:
-            # Extract schema and validate
             schema = MetadataExtractionAgent.extract_schema(df)
-            DataValidationAgent.validate_schema(df, required_columns=['date', 'impressions_(total)'])
-
-            # Generate SQL query
             sql_query = self.sql_agent.generate_sql(user_query, schema, COLUMN_MAPPING)
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
@@ -122,7 +106,7 @@ class DataAnalyzer:
             raise Exception(f"Analysis failed: {e}")
 
 def main():
-    st.title("AI Data Analyzer with Enhanced Column Mapping")
+    st.title("AI Data Analyzer with Debugging")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
@@ -149,11 +133,8 @@ def main():
             try:
                 with st.spinner("Analyzing your data..."):
                     result, query = st.session_state.analyzer.analyze(user_query, df)
-                    insights = InsightsGenerationAgent.generate_insights(result)
                 st.write("**Analysis Result:**")
                 st.dataframe(result)
-                st.write("**Generated Insights:**")
-                st.write(insights)
                 st.write("**SQL Query Used:**")
                 st.code(query, language='sql')
             except Exception as e:
