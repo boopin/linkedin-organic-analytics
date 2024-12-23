@@ -53,7 +53,7 @@ class DynamicQueryParser:
 
     @staticmethod
     def preprocess_query(user_query: str) -> str:
-        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
+        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by", "in", "a", "table"}
         query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
         return " ".join(query_terms)
 
@@ -121,10 +121,15 @@ class DataAnalyzer:
             return False, str(e)
 
     def analyze(self, user_query: str, schema: str, df: pd.DataFrame):
-        mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
-        sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
-        result = pd.read_sql_query(sql_query, self.conn)
-        return result, sql_query
+        try:
+            mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
+            sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
+            result = pd.read_sql_query(sql_query, self.conn)
+            return result, sql_query
+        except ValueError as ve:
+            raise ValueError(f"Validation Error: {ve}\nQuery attempted: {user_query}")
+        except Exception as e:
+            raise Exception(f"Analysis Error: {str(e)}\nQuery attempted: {user_query}")
 
 def main():
     st.title("AI Reports Analyzer")
@@ -168,7 +173,7 @@ def main():
         if st.button("Analyze"):
             try:
                 result, sql_query = analyzer.analyze(user_query, schema, df)
-                st.write("**Results:**")
+                st.write("**Results (Table Format):**")
                 st.dataframe(result)
                 st.write("**SQL Query Used:**")
                 st.code(sql_query, language="sql")
