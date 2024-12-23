@@ -11,21 +11,20 @@ import difflib
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# User-friendly column mapping
+# Column mapping for user-friendly queries
 COLUMN_MAPPING = {
-    "total impressions": "impressions_(total)",
-    "total clicks": "clicks_(total)",
-    "total reactions": "reactions_(total)",
-    "total comments": "comments_(total)",
-    "total reposts": "reposts_(total)",
-    "engagement rate": "engagement_rate_(total)"
+    "total impressions": "impressions",
+    "total clicks": "clicks",
+    "total reactions": "reactions",
+    "total comments": "comments",
+    "total reposts": "reposts",
+    "engagement rate": "engagement_rate"
 }
 
 class MetadataExtractionAgent:
     """Extracts schema and metadata from the dataset."""
     @staticmethod
     def extract_schema(df: pd.DataFrame) -> str:
-        """Generates a schema string from the dataset."""
         schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
         return " | ".join(schema)
 
@@ -53,7 +52,7 @@ class SQLQueryAgent:
 
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         """Converts a natural language query into SQL using GPT-4."""
-        # Map columns dynamically using ColumnMappingAgent
+        # Validate columns before generating the SQL query
         user_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
 
         # Generate the SQL query
@@ -71,9 +70,9 @@ class SQLQueryAgent:
         sql_query = response.content.strip()
 
         # Replace placeholder table names with the actual table name
-        sql_query = sql_query.replace("table_name", "data_table").replace("your_table_name", "data_table")
+        sql_query = sql_query.replace("TABLENAME", "data_table").replace("table_name", "data_table")
 
-        # Validate and log the query
+        # Log the generated query
         logger.warning(f"Generated SQL query: {sql_query}")
         if not sql_query.lower().startswith("select"):
             explanation_prompt = (
@@ -135,15 +134,17 @@ class DataAnalyzer:
             # Generate SQL query using SQL Query Agent
             sql_query = self.sql_agent.generate_sql(user_query, schema, df)
 
-            # Execute the SQL query
+            # Log and execute the SQL query
+            logger.info(f"Executing SQL query: {sql_query}")
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
+            logger.error(f"Analysis failed: {str(e)}")
             raise Exception(f"Analysis failed: {e}")
 
 
 def main():
-    st.title("AI Data Analyzer with Robust Column Handling")
+    st.title("AI Data Analyzer with Dynamic Column Mapping")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
@@ -185,7 +186,7 @@ def main():
                 st.write("**SQL Query Used:**")
                 st.code(query, language='sql')
             except Exception as e:
-                st.error(str(e))
+                st.error(f"Analysis failed: {e}")
     else:
         st.error(f"Failed to load data: {schema}")
 
