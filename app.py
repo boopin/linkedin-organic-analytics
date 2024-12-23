@@ -3,7 +3,12 @@ import pandas as pd
 import sqlite3
 import logging
 import plotly.express as px
-from typing import Tuple
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+from langchain.agents import Tool, initialize_agent, AgentType
+from langchain.agents.agent_toolkits import SQLDatabaseToolkit
+from langchain.sql_database import SQLDatabase
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -15,8 +20,9 @@ class DataAnalyzer:
             st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn = st.session_state.db_conn
         self.current_table = None
+        self.llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
 
-    def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
+    def load_data(self, file, sheet_name=None):
         try:
             if file.name.endswith('.csv'):
                 df = pd.read_csv(file)
@@ -26,22 +32,23 @@ class DataAnalyzer:
                     sheet_name = excel_file.sheet_names[0]
                 df = pd.read_excel(file, sheet_name=sheet_name)
 
+            # Normalize column names
             df.columns = [
                 c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
                 for c in df.columns
             ]
 
             if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
                 if not df['date'].isnull().all():
-                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
+                    df['week'] = df['date'].dt.to_period('W').astype(str)
                     df['year_month'] = df['date'].dt.to_period('M').astype(str)
                     df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
                     df['year'] = df['date'].dt.year.astype(str)
                 else:
-                    raise ValueError("Invalid dates in 'date' column.")
+                    raise ValueError("Invalid or missing dates in the 'date' column.")
             else:
-                raise ValueError("Dataset missing 'date' column.")
+                raise ValueError("The dataset is missing a 'date' column.")
 
             self.current_table = 'data_table'
             df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
@@ -54,45 +61,54 @@ class DataAnalyzer:
             logger.error(f"Error loading data: {e}")
             return False, str(e)
 
-    def analyze(self, sql_query: str) -> Tuple[pd.DataFrame, str]:
+    def initialize_agent_with_tools(self):
         try:
-            df_result = pd.read_sql_query(sql_query, self.conn)
-            if df_result.empty:
-                raise ValueError("Query returned no data.")
-            return df_result, sql_query
+            db = SQLDatabase(self.conn)
+            toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
+
+            tools = toolkit.get_tools()
+            agent = initialize_agent(
+                tools, self.llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True
+            )
+            return agent
         except Exception as e:
-            logger.error(f"Analysis error: {e}")
-            raise Exception(f"Analysis failed: {str(e)}")
+            logger.error(f"Error initializing agent: {e}")
+            raise Exception("Failed to initialize the AI agent.")
+
+    def analyze_with_agent(self, user_query: str):
+        try:
+            agent = self.initialize_agent_with_tools()
+            response = agent.run(user_query)
+            return response
+        except Exception as e:
+            logger.error(f"Agent analysis error: {e}")
+            raise Exception(f"Agent analysis failed: {str(e)}")
 
 def main():
-    st.title("Data Analysis Tool")
+    st.title("AI-Driven Data Analyzer with Agents")
     analyzer = DataAnalyzer()
 
-    uploaded_file = st.file_uploader("Upload a dataset (Excel or CSV)", type=["csv", "xlsx"])
+    uploaded_file = st.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
     if uploaded_file:
         sheet_name = None
         if uploaded_file.name.endswith('.xlsx'):
             excel_file = pd.ExcelFile(uploaded_file)
-            sheet_name = st.selectbox("Select sheet", excel_file.sheet_names)
+            sheet_name = st.selectbox("Select a sheet", excel_file.sheet_names)
 
         success, schema_info = analyzer.load_data(uploaded_file, sheet_name)
         if success:
             st.success("Data loaded successfully!")
-            st.text("Schema:")
-            st.text(schema_info)
+            st.text(f"Schema:\n{schema_info}")
 
-            user_query = st.text_area("Enter your SQL query")
-            if st.button("Run Query"):
+            user_query = st.text_area("Enter your query", placeholder="Show total impressions by quarter.")
+            if st.button("Run Query with AI Agent"):
                 try:
-                    result, query = analyzer.analyze(user_query)
-                    st.dataframe(result)
-                    st.code(query, language="sql")
-                    if len(result.columns) >= 2:
-                        st.plotly_chart(px.bar(result, x=result.columns[0], y=result.columns[1], title="Query Results"))
+                    response = analyzer.analyze_with_agent(user_query)
+                    st.text(response)
                 except Exception as e:
                     st.error(e)
         else:
-            st.error("Failed to load data.")
+            st.error(f"Failed to load data: {schema_info}")
 
 if __name__ == "__main__":
     main()
