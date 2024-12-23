@@ -3,9 +3,8 @@ import pandas as pd
 import sqlite3
 from typing import Tuple
 import logging
-from langchain.llms import OpenAI
-from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
 import plotly.express as px
 
 # Configure logging
@@ -18,7 +17,6 @@ class DataAnalyzer:
             st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn = st.session_state.db_conn
         self.current_table = None
-        self.llm = OpenAI(model="text-davinci-003", temperature=0)
 
     def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
         """Load data from uploaded file into SQLite database and compute derived columns."""
@@ -71,41 +69,36 @@ class DataAnalyzer:
         columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
         return "\n".join(columns)
 
-    def generate_sql_with_langchain(self, user_query: str) -> str:
-        """Generate SQL query using LangChain and OpenAI."""
+    def generate_sql(self, user_query: str) -> str:
+        """Generate SQL query from user input."""
         try:
             cursor = self.conn.cursor()
             available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
             logger.info(f"Available columns: {available_columns}")
 
-            # Create a LangChain prompt template
+            # Prompt template for SQL generation
             prompt_template = PromptTemplate(
                 input_variables=["user_query", "columns"],
                 template=(
-                    "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
+                    "Based on the user's request, generate a valid SQL query. "
                     "The table has the following columns: {columns}. "
-                    "User request: {user_query}. If a column required in the query doesn't exist, suggest alternatives based on the given columns."
+                    "User request: {user_query}."
                 )
             )
 
-            # Run the LangChain model
-            chain = LLMChain(llm=self.llm, prompt=prompt_template)
-            sql_query = chain.run({
-                "user_query": user_query,
-                "columns": ", ".join(available_columns),
-            })
-
+            # Simulate LangChain functionality (replace with OpenAI API if needed)
+            sql_query = f"SELECT * FROM {self.current_table} LIMIT 10;"  # Placeholder query
             logger.info(f"Generated SQL query: {sql_query}")
-            return sql_query.strip()
+            return sql_query
         except Exception as e:
             logger.error(f"Error generating SQL: {e}")
-            raise Exception("Failed to generate SQL query. Ensure the query aligns with available columns.")
+            raise Exception("Failed to generate SQL query.")
 
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input."""
         try:
             # Generate SQL query
-            sql_query = self.generate_sql_with_langchain(user_query)
+            sql_query = self.generate_sql(user_query)
             logger.info(f"Executing query: {sql_query}")
 
             # Execute query
@@ -152,7 +145,7 @@ def main():
                     st.plotly_chart(
                         px.bar(
                             result, x=result.columns[0], y=result.columns[1],
-                            title="Quarterly Comparison of Total Impressions"
+                            title="Query Results Visualization"
                         ),
                         use_container_width=True
                     )
