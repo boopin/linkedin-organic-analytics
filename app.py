@@ -1,10 +1,10 @@
-# App Version: 1.0.1
+# App Version: 1.0.2
 import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
 from langchain_openai.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage
+from langchain.schema import HumanMessage, AIMessage
 import logging
 import difflib
 import re
@@ -123,8 +123,14 @@ class SQLQueryAgent:
             function_call="auto"
         )
 
-        sql_query = response.get("content", {}).get("query", "")
-        return sql_query
+        # Correctly parse AIMessage content
+        if isinstance(response, AIMessage):
+            query_data = response.additional_kwargs.get("function_call", {}).get("query", "")
+            if not query_data:
+                raise Exception("No valid SQL query returned by the LLM.")
+            return query_data.strip()
+
+        raise Exception("Unexpected response type received from OpenAI.")
 
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
@@ -163,7 +169,7 @@ class DataAnalyzer:
             raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
 def main():
-    st.title("AI Reports Analyzer (Version 1.0.1)")
+    st.title("AI Reports Analyzer (Version 1.0.2)")
     analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
