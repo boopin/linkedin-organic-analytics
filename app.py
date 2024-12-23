@@ -23,7 +23,7 @@ COLUMN_MAPPING = {
     "total comments": ["comments", "total comments"],
     "total reposts": ["reposts", "total reposts"],
     "engagement rate": ["engagement_rate", "engagement rate"],
-    "date": ["date"]
+    "date": ["date", "dates"]
 }
 
 # Example queries for user guidance
@@ -33,6 +33,38 @@ EXAMPLE_QUERIES = [
     "What is the average engagement rate of all posts?",
     "Generate a bar graph of clicks grouped by post type."
 ]
+
+class PreprocessingPipeline:
+    """Preprocesses the dataset for normalization and error correction."""
+    @staticmethod
+    def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
+        """Standardize column names by removing special characters and spaces."""
+        df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
+        return df
+
+    @staticmethod
+    def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
+        """Detect and fill missing dates if possible."""
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            if df["date"].isnull().any():
+                logger.warning("Some dates are missing or invalid. Filling with NaT.")
+        return df
+
+    @staticmethod
+    def aggregate_to_monthly(df: pd.DataFrame) -> pd.DataFrame:
+        """Aggregate daily data into monthly if needed."""
+        if "date" in df.columns:
+            df["month"] = df["date"].dt.to_period("M").astype(str)
+            return df.groupby("month").sum().reset_index()
+        return df
+
+    @staticmethod
+    def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
+        """Run the full preprocessing pipeline."""
+        df = PreprocessingPipeline.clean_column_names(df)
+        df = PreprocessingPipeline.handle_missing_dates(df)
+        return df
 
 class ColumnMappingAgent:
     """Handles dynamic mapping of user terms to dataset column names."""
@@ -44,6 +76,13 @@ class ColumnMappingAgent:
         return " ".join(query_terms)
 
     @staticmethod
+    def singularize_term(term: str) -> str:
+        """Convert plural terms to singular if applicable."""
+        if term.endswith("s"):
+            return term[:-1]
+        return term
+
+    @staticmethod
     def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
         """Map user-friendly terms to actual dataset columns."""
         preprocessed_query = ColumnMappingAgent.preprocess_query(user_query)
@@ -51,6 +90,7 @@ class ColumnMappingAgent:
         mapped_query = preprocessed_query
         for user_term, synonyms in column_mapping.items():
             for synonym in synonyms:
+                synonym = ColumnMappingAgent.singularize_term(synonym)
                 match = difflib.get_close_matches(synonym.lower(), available_columns, n=1, cutoff=0.6)
                 if match:
                     actual_column = df.columns[available_columns.index(match[0])]
@@ -61,7 +101,7 @@ class ColumnMappingAgent:
     @staticmethod
     def validate_query_columns(mapped_query: str, df: pd.DataFrame):
         """Validate if all referenced columns in the query exist in the dataset."""
-        referenced_columns = re.findall(r"[a-zA-Z0-9_()]+", mapped_query)
+        referenced_columns = re.findall(r"[a-zA-Z0-9_]+", mapped_query)
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(
@@ -105,14 +145,11 @@ class DataAnalyzer:
         self.sql_agent = SQLQueryAgent(self.llm)
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Preprocess data."""
-        df.columns = [c.lower().strip().replace(" ", "_") for c in df.columns]
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
+        """Run preprocessing pipeline."""
+        return PreprocessingPipeline.preprocess_data(df)
 
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load data into SQLite."""
+        """Load dataset into SQLite."""
         try:
             df = self.preprocess_data(df)
             df.to_sql("data_table", self.conn, index=False, if_exists="replace")
