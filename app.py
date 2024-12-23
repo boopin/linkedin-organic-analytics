@@ -6,10 +6,21 @@ from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.schema import HumanMessage
+import difflib
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Column mapping for user-friendly queries
+COLUMN_MAPPING = {
+    "total impressions": "impressions_(total)",
+    "total clicks": "clicks_(total)",
+    "total reactions": "reactions_(total)",
+    "total comments": "comments_(total)",
+    "total reposts": "reposts_(total)",
+    "engagement rate": "engagement_rate_(total)"
+}
 
 class MetadataExtractionAgent:
     """Extracts schema and metadata from the dataset."""
@@ -23,7 +34,13 @@ class DataValidationAgent:
     """Validates dataset compatibility with user queries."""
     @staticmethod
     def validate_schema(df: pd.DataFrame, required_columns: list) -> None:
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        available_columns = df.columns
+        missing_columns = []
+        
+        for col in required_columns:
+            if not any(difflib.get_close_matches(col, available_columns, n=1, cutoff=0.7)):
+                missing_columns.append(col)
+        
         if missing_columns:
             raise ValueError(f"The dataset is missing required columns: {', '.join(missing_columns)}")
 
@@ -33,7 +50,11 @@ class SQLQueryAgent:
     def __init__(self, llm):
         self.llm = llm
 
-    def generate_sql(self, user_query: str, schema: str) -> str:
+    def generate_sql(self, user_query: str, schema: str, column_mapping: dict) -> str:
+        # Map user terms to actual column names
+        for user_term, column_name in column_mapping.items():
+            user_query = user_query.replace(user_term, column_name)
+
         prompt = (
             f"You are an expert SQL data analyst. Based on the following schema:\n\n"
             f"{schema}\n\n"
@@ -52,10 +73,10 @@ class InsightsGenerationAgent:
     """Generates insights from SQL query results."""
     @staticmethod
     def generate_insights(results: pd.DataFrame) -> str:
-        if 'clicks' in results.columns:
-            top_clicks = results['clicks'].max()
-            avg_clicks = results['clicks'].mean()
-            return f"The top post had {top_clicks} clicks. The average clicks across posts were {avg_clicks:.2f}."
+        if 'impressions_(total)' in results.columns:
+            top_impressions = results['impressions_(total)'].max()
+            avg_impressions = results['impressions_(total)'].mean()
+            return f"The top date had {top_impressions} total impressions. The average impressions across dates were {avg_impressions:.2f}."
         return "No actionable insights available for this dataset."
 
 
@@ -91,17 +112,17 @@ class DataAnalyzer:
         try:
             # Extract schema and validate
             schema = MetadataExtractionAgent.extract_schema(df)
-            DataValidationAgent.validate_schema(df, required_columns=['date', 'total_impressions'])
+            DataValidationAgent.validate_schema(df, required_columns=['date', 'impressions_(total)'])
 
             # Generate SQL query
-            sql_query = self.sql_agent.generate_sql(user_query, schema)
+            sql_query = self.sql_agent.generate_sql(user_query, schema, COLUMN_MAPPING)
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
             raise Exception(f"Analysis failed: {e}")
 
 def main():
-    st.title("AI Data Analyzer with Agents")
+    st.title("AI Data Analyzer with Enhanced Column Mapping")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
@@ -110,7 +131,6 @@ def main():
         st.info("Please upload a file to begin analysis.")
         st.stop()
 
-    # Handle multi-sheet Excel files
     if uploaded_file.name.endswith('xlsx'):
         excel_file = pd.ExcelFile(uploaded_file)
         sheet_names = excel_file.sheet_names
@@ -124,7 +144,7 @@ def main():
         st.success("Data loaded successfully!")
         st.write(f"**Dataset Schema:** {schema}")
         
-        user_query = st.text_area("Enter your query", placeholder="Show me top 5 posts by clicks.")
+        user_query = st.text_area("Enter your query", placeholder="Show me the top 5 dates with the highest total impressions.")
         if st.button("Analyze"):
             try:
                 with st.spinner("Analyzing your data..."):
