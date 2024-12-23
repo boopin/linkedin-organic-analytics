@@ -1,3 +1,4 @@
+# App Version: 1.0.1
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -102,13 +103,6 @@ class SQLQueryAgent:
         """Generate SQL query using OpenAI function calling."""
         available_columns = [col for col in df.columns]
 
-        def sql_generation_function(query: str, columns: list):
-            """Structured function for SQL query generation."""
-            if any(term not in columns for term in query.split()):
-                raise ValueError("Query references non-existent columns.")
-            # Example implementation (this would be enhanced with LLM)
-            return f"SELECT * FROM data_table WHERE {query}"
-
         function_call_prompt = {
             "name": "sql_generation",
             "description": "Generate an SQL query for the given schema and user query.",
@@ -122,10 +116,11 @@ class SQLQueryAgent:
             }
         }
 
+        # Updated function call parameter to 'auto'
         response = self.llm.invoke(
             [HumanMessage(content=user_query)],
             functions=[function_call_prompt],
-            function_call="sql_generation"
+            function_call="auto"
         )
 
         sql_query = response.get("content", {}).get("query", "")
@@ -168,7 +163,7 @@ class DataAnalyzer:
             raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
 def main():
-    st.title("AI Reports Analyzer")
+    st.title("AI Reports Analyzer (Version 1.0.1)")
     analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
