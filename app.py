@@ -1,4 +1,4 @@
-# App Version: 1.0.3
+# App Version: 1.0.4
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -46,17 +46,28 @@ class PreprocessingPipeline:
         return df
 
 class DynamicQueryParser:
+    NUMBER_MAPPING = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10
+    }
+
     @staticmethod
-    def singularize_term(term: str) -> str:
-        if term.endswith("s"):
-            return term[:-1]
-        return term
+    def convert_words_to_numbers(query: str) -> str:
+        """Convert number words (e.g., 'five') to digits."""
+        words = query.split()
+        converted_words = [
+            str(DynamicQueryParser.NUMBER_MAPPING[word]) if word in DynamicQueryParser.NUMBER_MAPPING else word
+            for word in words
+        ]
+        return " ".join(converted_words)
 
     @staticmethod
     def preprocess_query(user_query: str) -> str:
+        """Remove filler words and normalize the query."""
         filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by", "in", "a", "table", "along"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isdigit()]
-        return " ".join(query_terms)
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words]
+        processed_query = DynamicQueryParser.convert_words_to_numbers(" ".join(query_terms))
+        return processed_query
 
     @staticmethod
     def map_composite_terms(mapped_query: str) -> str:
@@ -116,9 +127,19 @@ class SQLQueryAgent:
             }
         }
 
-        # Updated function call parameter to 'auto'
+        # Detailed and example-based prompt
+        prompt_content = (
+            f"Schema: {schema}\n"
+            "Examples:\n"
+            "1. User Query: Show me the top 5 dates with the highest total impressions.\n"
+            "   SQL Query: SELECT date, impressions_total FROM data_table ORDER BY impressions_total DESC LIMIT 5;\n"
+            "2. User Query: Show me the posts with the most clicks.\n"
+            "   SQL Query: SELECT * FROM data_table ORDER BY clicks DESC LIMIT 5;\n"
+            f"User Query: {user_query}\nGenerate the SQL query based on the examples above."
+        )
+
         response = self.llm.invoke(
-            [HumanMessage(content=f"Schema: {schema}. User query: {user_query}. Generate a valid SQL query using the table 'data_table'.")],
+            [HumanMessage(content=prompt_content)],
             functions=[function_call_prompt],
             function_call="auto"
         )
@@ -126,7 +147,6 @@ class SQLQueryAgent:
         # Log raw response for debugging
         logger.warning(f"Raw LLM Response: {response}")
 
-        # Correctly parse AIMessage content
         if isinstance(response, AIMessage):
             query_data = response.additional_kwargs.get("function_call", {}).get("query", "")
             if not query_data:
@@ -172,58 +192,4 @@ class DataAnalyzer:
             raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
 def main():
-    st.title("AI Reports Analyzer (Version 1.0.3)")
-    analyzer = DataAnalyzer()
-
-    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    if not uploaded_file:
-        st.info("Please upload a file.")
-        return
-
-    try:
-        if uploaded_file.name.endswith(".xlsx"):
-            try:
-                import openpyxl
-            except ImportError:
-                st.error("Missing dependency: openpyxl. Please install it using 'pip install openpyxl'.")
-                return
-
-            excel_file = pd.ExcelFile(uploaded_file)
-            sheet_name = st.selectbox("Select Sheet", excel_file.sheet_names)
-            df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
-        else:
-            df = pd.read_csv(uploaded_file)
-
-        success, schema = analyzer.load_data(df)
-        if not success:
-            st.error(f"Failed to load data: {schema}")
-            return
-
-        st.success("Data loaded successfully!")
-
-        st.write("### Dataset Schema")
-        schema_columns = pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes})
-        st.dataframe(schema_columns)
-
-        st.write("### Example Queries")
-        for query in EXAMPLE_QUERIES:
-            st.markdown(f"- {query}")
-
-        user_query = st.text_input("Enter your query")
-        if st.button("Analyze"):
-            try:
-                result, sql_query = analyzer.analyze(user_query, schema, df)
-                st.write("**Results (Table Format):**")
-                st.dataframe(result)
-                st.write("**SQL Query Used:**")
-                st.code(sql_query, language="sql")
-            except ValueError as ve:
-                st.error(f"Validation Error: {ve}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-    except Exception as e:
-        st.error(f"Failed to process file: {e}")
-
-if __name__ == "__main__":
-    main()
+    st.title("AI Reports Analyzer (Version
