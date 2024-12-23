@@ -3,8 +3,6 @@ import pandas as pd
 import sqlite3
 from typing import Tuple
 import logging
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 import plotly.express as px
 
 # Configure logging
@@ -76,20 +74,16 @@ class DataAnalyzer:
             available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
             logger.info(f"Available columns: {available_columns}")
 
-            # Prompt template for SQL generation
-            prompt_template = PromptTemplate(
-                input_variables=["user_query", "columns"],
-                template=(
-                    "Based on the user's request, generate a valid SQL query. "
-                    "The table has the following columns: {columns}. "
-                    "User request: {user_query}."
-                )
-            )
+            # Basic SQL generation logic
+            if "quarter" in available_columns and "impressions_total" in available_columns:
+                return """
+                    SELECT quarter, SUM(impressions_total) AS total_impressions
+                    FROM data_table
+                    GROUP BY quarter
+                """
+            else:
+                raise ValueError("Required columns not found in the dataset.")
 
-            # Simulate LangChain functionality (replace with OpenAI API if needed)
-            sql_query = f"SELECT * FROM {self.current_table} LIMIT 10;"  # Placeholder query
-            logger.info(f"Generated SQL query: {sql_query}")
-            return sql_query
         except Exception as e:
             logger.error(f"Error generating SQL: {e}")
             raise Exception("Failed to generate SQL query.")
