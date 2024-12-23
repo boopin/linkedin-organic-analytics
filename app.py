@@ -7,6 +7,7 @@ from langchain_openai.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 import difflib
 import plotly.express as px
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING)
@@ -28,7 +29,7 @@ EXAMPLE_QUERIES = [
     "Show me the top 5 dates with the highest total impressions.",
     "Show me the posts with the most clicks.",
     "What is the average engagement rate of all posts?",
-    "Show the total likes grouped by month."
+    "Generate a bar graph of clicks grouped by post type."
 ]
 
 class ColumnMappingAgent:
@@ -44,7 +45,20 @@ class ColumnMappingAgent:
                     actual_column = df.columns[available_columns.index(match[0])]
                     user_query = user_query.replace(user_term, actual_column)
                     return user_query
-        return user_query
+        raise ValueError(
+            f"The user query references '{user_term}' which could not be mapped to any existing columns. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+def validate_columns(user_query: str, df: pd.DataFrame):
+    """Validate that all columns referenced in the query exist in the dataset."""
+    referenced_columns = re.findall(r"[a-zA-Z0-9_]+", user_query)
+    missing_columns = [col for col in referenced_columns if col not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"The following columns referenced in the query do not exist in the dataset: {', '.join(missing_columns)}. "
+            f"Available columns: {list(df.columns)}"
+        )
 
 class SQLQueryAgent:
     """Handles SQL query generation."""
@@ -54,6 +68,7 @@ class SQLQueryAgent:
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         """Generate SQL query using GPT-4."""
         user_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
+        validate_columns(user_query, df)
 
         # Generate the SQL query
         prompt = (
@@ -112,6 +127,11 @@ def create_plot(df: pd.DataFrame, x: str, y: str, chart_type: str):
         fig = px.histogram(df, x=x, title=f"Distribution of {x}")
     return fig
 
+def is_visualization_request(query: str) -> bool:
+    """Check if the query requests a visualization."""
+    visualization_keywords = ["graph", "chart", "visualize", "bar graph", "scatter plot"]
+    return any(keyword in query.lower() for keyword in visualization_keywords)
+
 def main():
     st.title("Social Media Analytics Tool")
     analyzer = DataAnalyzer()
@@ -148,6 +168,8 @@ def main():
 
         # User query input
         user_query = st.text_input("Enter your query")
+        generate_chart = is_visualization_request(user_query)
+
         if st.button("Analyze"):
             try:
                 result, sql_query = analyzer.analyze(user_query, schema, df)
@@ -158,17 +180,18 @@ def main():
             except Exception as e:
                 st.error(f"Error: {e}")
 
-        # Visualization Options
-        st.write("### Generate Visualizations")
-        x_axis = st.selectbox("Select X-axis", options=df.columns)
-        y_axis = st.selectbox("Select Y-axis", options=df.columns)
-        chart_type = st.selectbox("Select Chart Type", ["Bar", "Line", "Scatter", "Histogram"])
-        if st.button("Generate Chart"):
-            try:
-                fig = create_plot(df, x=x_axis, y=y_axis, chart_type=chart_type)
-                st.plotly_chart(fig)
-            except Exception as e:
-                st.error(f"Error generating chart: {e}")
+        # Show visualization options if requested in the query
+        if generate_chart:
+            st.write("### Generate Visualization")
+            x_axis = st.selectbox("Select X-axis", options=df.columns)
+            y_axis = st.selectbox("Select Y-axis", options=df.columns)
+            chart_type = st.selectbox("Select Chart Type", ["Bar", "Line", "Scatter", "Histogram"])
+            if st.button("Generate Chart"):
+                try:
+                    fig = create_plot(df, x=x_axis, y=y_axis, chart_type=chart_type)
+                    st.plotly_chart(fig)
+                except Exception as e:
+                    st.error(f"Error generating chart: {e}")
 
     except Exception as e:
         st.error(f"Failed to process file: {e}")
