@@ -1,4 +1,3 @@
-
 # App Version: 1.0.5
 import streamlit as st
 import pandas as pd
@@ -127,20 +126,14 @@ class SQLQueryAgent:
         }
 
         prompt_content = (
-            f"Schema: {schema}
-"
-            "Examples:
-"
-            "1. User Query: Show me the top 5 dates with the highest total impressions.
-"
-            "   SQL Query: SELECT date, impressions_total FROM data_table ORDER BY impressions_total DESC LIMIT 5;
-"
-            "2. User Query: Show me the posts with the most clicks.
-"
-            "   SQL Query: SELECT * FROM data_table ORDER BY clicks DESC LIMIT 5;
-"
-            f"User Query: {user_query}
-Generate the SQL query based on the examples above."
+            f"Schema: {schema}\n"
+            "Examples:\n"
+            "1. User Query: Show me the top 5 dates with the highest total impressions.\n"
+            "   SQL Query: SELECT date, impressions_total FROM data_table ORDER BY impressions_total DESC LIMIT 5;\n"
+            "2. User Query: Show me the posts with the most clicks.\n"
+            "   SQL Query: SELECT * FROM data_table ORDER BY clicks DESC LIMIT 5;\n"
+            f"User Query: {user_query}\n"
+            "Generate the SQL query based on the examples above."
         )
 
         response = self.llm.invoke(
