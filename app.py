@@ -59,6 +59,7 @@ class ColumnMappingAgent:
     @staticmethod
     def validate_query_columns(mapped_query: str, df: pd.DataFrame):
         """Validate if all referenced columns in the query exist in the dataset."""
+        # Extract relevant terms from the query
         referenced_columns = re.findall(r"[a-zA-Z0-9_()]+", mapped_query)
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
@@ -153,8 +154,13 @@ def main():
             return
 
         st.success("Data loaded successfully!")
+
+        # Display schema dropdown
         st.write("### Dataset Schema")
-        st.dataframe(pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes}))
+        schema_columns = pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes})
+        selected_column = st.selectbox("Select a column to view details", schema_columns['Column'])
+        selected_details = schema_columns[schema_columns['Column'] == selected_column]
+        st.write("Details:", selected_details)
 
         st.write("### Example Queries")
         for query in EXAMPLE_QUERIES:
