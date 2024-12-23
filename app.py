@@ -1,203 +1,165 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import logging
 from typing import Tuple
-from langchain_openai.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage
-import difflib
-import re
+import logging
+from langchain.llms import OpenAI
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+import plotly.express as px
 
 # Configure logging
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Example queries for user guidance
-EXAMPLE_QUERIES = [
-    "Show me the top 5 dates with the highest total impressions.",
-    "Show me the posts with the most clicks.",
-    "What is the average engagement rate of all posts?",
-    "Generate a bar graph of clicks grouped by post type."
-]
-
-class PreprocessingPipeline:
-    """Preprocesses the dataset for normalization and error correction."""
-    @staticmethod
-    def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-        """Standardize column names by removing special characters and spaces."""
-        df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
-        return df
-
-    @staticmethod
-    def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-        """Detect and fill missing dates if possible."""
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
-
-    @staticmethod
-    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
-        """Fix Arrow serialization errors by converting incompatible columns."""
-        for col in df.select_dtypes(include=["datetime", "object"]).columns:
-            df[col] = df[col].astype("string", errors="ignore")
-        return df
-
-    @staticmethod
-    def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
-        """Run the full preprocessing pipeline."""
-        df = PreprocessingPipeline.clean_column_names(df)
-        df = PreprocessingPipeline.handle_missing_dates(df)
-        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
-        return df
-
-class DynamicQueryParser:
-    """Handles dynamic query parsing and mapping with singular/plural handling."""
-    @staticmethod
-    def singularize_term(term: str) -> str:
-        """Convert plural terms to singular if applicable."""
-        if term.endswith("s"):
-            return term[:-1]
-        return term
-
-    @staticmethod
-    def preprocess_query(user_query: str) -> str:
-        """Preprocess query to remove filler words and focus on meaningful terms."""
-        filler_words = {"show", "me", "the", "top", "with", "highest", "most", "posts", "and", "or", "by"}
-        query_terms = [word for word in user_query.lower().split() if word not in filler_words and not word.isnumeric()]
-        return " ".join(query_terms)
-
-    @staticmethod
-    def map_query_to_columns(user_query: str, df: pd.DataFrame) -> str:
-        """Map query terms to actual dataset columns using singularization and fuzzy matching."""
-        preprocessed_query = DynamicQueryParser.preprocess_query(user_query)
-        available_columns = [col.lower() for col in df.columns]
-        mapped_query = preprocessed_query
-
-        for term in preprocessed_query.split():
-            # Singularize the term
-            singular_term = DynamicQueryParser.singularize_term(term)
-            # Perform fuzzy matching
-            match = difflib.get_close_matches(singular_term, available_columns, n=1, cutoff=0.6)
-            if match:
-                actual_column = df.columns[available_columns.index(match[0])]
-                mapped_query = mapped_query.replace(term, actual_column)
-
-        return mapped_query
-
-    @staticmethod
-    def validate_query(mapped_query: str, df: pd.DataFrame):
-        """Validate if all referenced columns exist in the dataset."""
-        referenced_columns = re.findall(r"[a-zA-Z0-9_]+", mapped_query)
-        missing_columns = [col for col in referenced_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(
-                f"The following columns referenced in the query do not exist in the dataset: {', '.join(missing_columns)}. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-class SQLQueryAgent:
-    """Handles SQL query generation."""
-    def __init__(self, llm):
-        self.llm = llm
-
-    def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
-        """Generate SQL query using GPT-4 with dynamic query parsing."""
-        # Dynamically map and validate the query
-        mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
-        DynamicQueryParser.validate_query(mapped_query, df)
-
-        # Generate SQL query
-        prompt = (
-            f"Schema: {schema}\n"
-            f"Query: {mapped_query}\n"
-            f"Generate a valid SQL query for SQLite. Use the table name 'data_table'."
-        )
-        response = self.llm.invoke([HumanMessage(content=prompt)])
-        sql_query = response.content.strip()
-
-        sql_query = sql_query.replace("TABLENAME", "data_table").replace("table_name", "data_table")
-        logger.warning(f"Generated SQL query: {sql_query}")
-        return sql_query
-
 class DataAnalyzer:
-    """Analyzes data using SQLite and AI."""
     def __init__(self):
-        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
-        self.llm = ChatOpenAI(model="gpt-4")
-        self.sql_agent = SQLQueryAgent(self.llm)
+        if 'db_conn' not in st.session_state:
+            st.session_state.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+        self.conn = st.session_state.db_conn
+        self.current_table = None
+        self.llm = OpenAI(model="text-davinci-003", temperature=0)
 
-    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Run preprocessing pipeline."""
-        return PreprocessingPipeline.preprocess_data(df)
-
-    def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
-        """Load dataset into SQLite."""
+    def load_data(self, file, sheet_name=None) -> Tuple[bool, str]:
+        """Load data from uploaded file into SQLite database and compute derived columns."""
         try:
-            df = self.preprocess_data(df)
-            df.to_sql("data_table", self.conn, index=False, if_exists="replace")
-            schema = ", ".join([f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)])
-            return True, schema
+            # Load data
+            if file.name.endswith('.csv'):
+                df = pd.read_csv(file)
+            else:
+                excel_file = pd.ExcelFile(file)
+                if sheet_name is None:
+                    sheet_name = excel_file.sheet_names[0]
+                df = pd.read_excel(file, sheet_name=sheet_name)
+
+            # Clean column names
+            df.columns = [
+                c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
+                for c in df.columns
+            ]
+
+            # Check and process the date column
+            if 'date' in df.columns:
+                # Parse date with MM/DD/YYYY format
+                df['date'] = pd.to_datetime(df['date'], format='%m/%d/%Y', errors='coerce')
+                if not df['date'].isnull().all():
+                    # Compute derived time-based fields
+                    df['week'] = df['date'].dt.to_period('W-SUN').astype(str)
+                    df['year_month'] = df['date'].dt.to_period('M').astype(str)
+                    df['quarter'] = 'Q' + df['date'].dt.quarter.astype(str) + ' ' + df['date'].dt.year.astype(str)
+                    df['year'] = df['date'].dt.year.astype(str)
+                else:
+                    raise ValueError("The 'date' column contains no valid dates. Please check the dataset format.")
+            else:
+                raise ValueError("The dataset is missing a 'date' column.")
+
+            # Save the processed dataset into SQLite
+            self.current_table = 'data_table'
+            df.to_sql(self.current_table, self.conn, index=False, if_exists='replace')
+
+            # Return schema information for user feedback
+            cursor = self.conn.cursor()
+            schema_info = cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()
+            return True, self.format_schema_info(schema_info)
+
         except Exception as e:
             logger.error(f"Error loading data: {e}")
             return False, str(e)
 
-    def analyze(self, user_query: str, schema: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-        """Perform analysis."""
-        mapped_query = DynamicQueryParser.map_query_to_columns(user_query, df)
-        sql_query = self.sql_agent.generate_sql(mapped_query, schema, df)
-        result = pd.read_sql_query(sql_query, self.conn)
-        return result, sql_query
+    def format_schema_info(self, schema_info) -> str:
+        """Format schema information for display."""
+        columns = [f"- {col[1]} ({col[2]})" for col in schema_info]
+        return "\n".join(columns)
+
+    def generate_sql_with_langchain(self, user_query: str) -> str:
+        """Generate SQL query using LangChain and OpenAI."""
+        try:
+            cursor = self.conn.cursor()
+            available_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+            logger.info(f"Available columns: {available_columns}")
+
+            # Create a LangChain prompt template
+            prompt_template = PromptTemplate(
+                input_variables=["user_query", "columns"],
+                template=(
+                    "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
+                    "The table has the following columns: {columns}. "
+                    "User request: {user_query}."
+                )
+            )
+
+            # Run the LangChain model
+            chain = LLMChain(llm=self.llm, prompt=prompt_template)
+            sql_query = chain.run({
+                "user_query": user_query,
+                "columns": ", ".join(available_columns),
+            })
+
+            logger.info(f"Generated SQL query: {sql_query}")
+            return sql_query.strip()
+        except Exception as e:
+            logger.error(f"Error generating SQL: {e}")
+            raise Exception("Failed to generate SQL query.")
+
+    def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
+        """Generate and execute SQL query based on user input."""
+        try:
+            # Generate SQL query
+            sql_query = self.generate_sql_with_langchain(user_query)
+            logger.info(f"Executing query: {sql_query}")
+
+            # Execute query
+            df_result = pd.read_sql_query(sql_query, self.conn)
+
+            if df_result.empty:
+                raise ValueError("The query returned no data. Ensure the dataset has relevant information.")
+
+            return df_result, sql_query
+        except Exception as e:
+            logger.error(f"Analysis error: {e}")
+            raise Exception(f"Analysis failed: {str(e)}")
 
 def main():
-    st.title("AI Reports Analyzer")
+    st.title("AI Data Analyzer")
     analyzer = DataAnalyzer()
 
-    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    if not uploaded_file:
-        st.info("Please upload a file.")
-        return
+    # File upload
+    uploaded_file = st.file_uploader("Upload your dataset (Excel or CSV)", type=["csv", "xlsx"])
 
-    try:
-        if uploaded_file.name.endswith(".xlsx"):
+    if uploaded_file:
+        sheet_name = None
+        if uploaded_file.name.endswith('.xlsx'):
             excel_file = pd.ExcelFile(uploaded_file)
-            sheet_name = st.selectbox("Select Sheet", excel_file.sheet_names)
-            df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+            sheet_name = st.selectbox("Select a sheet to analyze", excel_file.sheet_names)
+
+        success, schema_info = analyzer.load_data(uploaded_file, sheet_name=sheet_name)
+
+        if success:
+            st.success("Data loaded successfully!")
+            st.text("Schema:")
+            st.text(schema_info)
+
+            # User query input
+            user_query = st.text_input("Enter your query", "Show quarterly comparison of Q3 vs Q2 for total impressions")
+
+            if st.button("Run Analysis"):
+                try:
+                    result, query = analyzer.analyze(user_query)
+                    st.dataframe(result)
+                    st.code(query, language='sql')
+
+                    # Plotly visualization
+                    st.plotly_chart(
+                        px.bar(
+                            result, x=result.columns[0], y=result.columns[1],
+                            title="Quarterly Comparison of Total Impressions"
+                        ),
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(e)
         else:
-            df = pd.read_csv(uploaded_file)
-
-        success, schema = analyzer.load_data(df)
-        if not success:
-            st.error(f"Failed to load data: {schema}")
-            return
-
-        st.success("Data loaded successfully!")
-
-        # Display schema dropdown
-        st.write("### Dataset Schema")
-        schema_columns = pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes})
-        selected_column = st.selectbox("Select a column to view details", schema_columns['Column'])
-        selected_details = schema_columns[schema_columns['Column'] == selected_column]
-        st.write("Details:", selected_details)
-
-        st.write("### Example Queries")
-        for query in EXAMPLE_QUERIES:
-            st.markdown(f"- {query}")
-
-        user_query = st.text_input("Enter your query")
-        if st.button("Analyze"):
-            try:
-                result, sql_query = analyzer.analyze(user_query, schema, df)
-                st.write("**Results:**")
-                st.dataframe(result)
-                st.write("**SQL Query Used:**")
-                st.code(sql_query, language="sql")
-            except ValueError as ve:
-                st.error(f"Validation Error: {ve}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-    except Exception as e:
-        st.error(f"Failed to process file: {e}")
+            st.error("Failed to load data. Please check the file and try again.")
 
 if __name__ == "__main__":
     main()
