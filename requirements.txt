@@ -4,14 +4,15 @@ pandas>=2.2.0
 numpy>=1.26.0
 
 # LangChain and OpenAI
-langchain-openai>=0.1.0
+langchain-openai>=0.2.14
 openai>=1.12.0
 
-# Visualization
-plotly>=5.18.0
+# Database and Utilities
+sqlalchemy>=2.0.36
+python-dotenv>=1.0.0
 
-# Date handling
-python-dateutil>=2.8.2
+# Excel support
+openpyxl>=3.1.5
 
-# File support
-openpyxl>=3.1.2
+# Plotting and Visualization
+plotly>=5.24.0
