@@ -6,15 +6,22 @@ from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with reduced verbosity
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 class DataAnalyzer:
     def __init__(self):
-        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
+        """Do not initialize SQLite until a file is uploaded."""
+        self.conn = None
         self.current_table = 'data_table'
         self.llm = ChatOpenAI(model="gpt-4")
+
+    def initialize_database(self):
+        """Initialize SQLite database only when required."""
+        if not self.conn:
+            self.conn = sqlite3.connect(':memory:', check_same_thread=False)
+            logger.info("SQLite database initialized.")
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean column names, handle missing or invalid data, and create a 'month' column if applicable."""
@@ -47,6 +54,7 @@ class DataAnalyzer:
     def load_data(self, df: pd.DataFrame) -> Tuple[bool, str]:
         """Load preprocessed DataFrame into SQLite database."""
         try:
+            self.initialize_database()
             processed_df = self.preprocess_data(df)
             logger.info(f"Processed dataset: {processed_df.head()}")
 
@@ -67,6 +75,8 @@ class DataAnalyzer:
 
     def verify_table_existence(self):
         """Check if the table exists in SQLite before querying."""
+        if not self.conn:
+            raise ValueError("SQLite database is not initialized. Please upload a valid dataset first.")
         cursor = self.conn.cursor()
         tables = cursor.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
         logger.info(f"Existing tables in SQLite: {tables}")
