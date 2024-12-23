@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import logging
+from typing import Tuple  # Fixed import for Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
