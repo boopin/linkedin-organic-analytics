@@ -84,7 +84,7 @@ class DataAnalyzer:
                 template=(
                     "You are a SQL query generator. Based on the user's request, generate a valid SQL query. "
                     "The table has the following columns: {columns}. "
-                    "User request: {user_query}."
+                    "User request: {user_query}. If a column required in the query doesn't exist, suggest alternatives based on the given columns."
                 )
             )
 
@@ -99,7 +99,7 @@ class DataAnalyzer:
             return sql_query.strip()
         except Exception as e:
             logger.error(f"Error generating SQL: {e}")
-            raise Exception("Failed to generate SQL query.")
+            raise Exception("Failed to generate SQL query. Ensure the query aligns with available columns.")
 
     def analyze(self, user_query: str) -> Tuple[pd.DataFrame, str]:
         """Generate and execute SQL query based on user input."""
