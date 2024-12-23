@@ -1,17 +1,12 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import logging
 import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain.sql_database import SQLDatabase
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+# Configure SQLite database
 class DataAnalyzer:
     def __init__(self):
         if 'db_conn' not in st.session_state:
@@ -30,7 +25,6 @@ class DataAnalyzer:
                     sheet_name = excel_file.sheet_names[0]
                 df = pd.read_excel(file, sheet_name=sheet_name)
 
-            # Normalize column names
             df.columns = [
                 c.lower().strip().replace(' ', '_').replace('(', '').replace(')', '').replace('-', '_')
                 for c in df.columns
@@ -56,7 +50,6 @@ class DataAnalyzer:
             return True, "\n".join([f"- {col[1]} ({col[2]})" for col in schema_info])
 
         except Exception as e:
-            logger.error(f"Error loading data: {e}")
             return False, str(e)
 
     def generate_sql(self, user_query: str):
@@ -71,19 +64,16 @@ class DataAnalyzer:
             sql_query = chain.run({"user_query": user_query, "columns": ", ".join(columns)})
             return sql_query.strip()
         except Exception as e:
-            logger.error(f"Error generating SQL: {e}")
             raise Exception("SQL generation failed.")
 
     def analyze(self, user_query: str):
         try:
             sql_query = self.generate_sql(user_query)
-            logger.info(f"Executing query: {sql_query}")
             df_result = pd.read_sql_query(sql_query, self.conn)
             if df_result.empty:
                 raise ValueError("Query returned no data.")
             return df_result, sql_query
         except Exception as e:
-            logger.error(f"Analysis error: {e}")
             raise Exception(f"Analysis failed: {str(e)}")
 
 def main():
