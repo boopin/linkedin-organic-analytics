@@ -34,19 +34,18 @@ EXAMPLE_QUERIES = [
 class ColumnMappingAgent:
     """Handles dynamic mapping of user terms to dataset column names."""
     @staticmethod
-    def extract_columns_from_query(user_query: str, column_mapping: dict) -> list:
-        """Extract relevant column references from the user query."""
-        extracted_columns = []
-        for user_term, synonyms in column_mapping.items():
-            if any(synonym in user_query.lower() for synonym in synonyms):
-                extracted_columns.append(user_term)
-        return extracted_columns
+    def preprocess_query(user_query: str) -> str:
+        """Preprocess query to remove filler words and focus on meaningful terms."""
+        filler_words = {"show", "me", "the", "top", "with", "highest", "and", "or", "by"}
+        query_terms = [word for word in user_query.lower().split() if word not in filler_words]
+        return " ".join(query_terms)
 
     @staticmethod
     def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
         """Map user-friendly terms to actual dataset columns."""
+        preprocessed_query = ColumnMappingAgent.preprocess_query(user_query)
         available_columns = [col.lower() for col in df.columns]
-        mapped_query = user_query.lower()
+        mapped_query = preprocessed_query
         for user_term, synonyms in column_mapping.items():
             for synonym in synonyms:
                 match = difflib.get_close_matches(synonym.lower(), available_columns, n=1, cutoff=0.6)
@@ -59,7 +58,6 @@ class ColumnMappingAgent:
     @staticmethod
     def validate_query_columns(mapped_query: str, df: pd.DataFrame):
         """Validate if all referenced columns in the query exist in the dataset."""
-        # Extract relevant terms from the query
         referenced_columns = re.findall(r"[a-zA-Z0-9_()]+", mapped_query)
         missing_columns = [col for col in referenced_columns if col not in df.columns]
         if missing_columns:
@@ -74,10 +72,7 @@ class SQLQueryAgent:
         self.llm = llm
 
     def preprocess_query(self, user_query: str, column_mapping: dict, df: pd.DataFrame) -> str:
-        """Extract and map columns in the query."""
-        extracted_columns = ColumnMappingAgent.extract_columns_from_query(user_query, column_mapping)
-        if not extracted_columns:
-            raise ValueError("No valid columns found in the query. Please check your input.")
+        """Preprocess and map columns in the query."""
         mapped_query = ColumnMappingAgent.map_columns(user_query, df, column_mapping)
         ColumnMappingAgent.validate_query_columns(mapped_query, df)
         return mapped_query
