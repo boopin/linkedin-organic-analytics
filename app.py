@@ -4,7 +4,6 @@ import sqlite3
 import logging
 from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
-from langchain.agents import Tool, initialize_agent, AgentType
 from langchain.schema import HumanMessage
 import difflib
 
@@ -31,15 +30,17 @@ class MetadataExtractionAgent:
 
 
 class SQLQueryAgent:
-    """Generates SQL queries dynamically using GPT-4."""
+    """Handles prompt-to-SQL query conversion using GPT-4."""
     def __init__(self, llm):
         self.llm = llm
 
     def generate_sql(self, user_query: str, schema: str, column_mapping: dict) -> str:
+        """Converts a natural language query into SQL using GPT-4."""
         # Map user terms to actual column names
         for user_term, column_name in column_mapping.items():
             user_query = user_query.replace(user_term, column_name)
 
+        # Generate the SQL query
         prompt = (
             f"You are an expert SQL data analyst. Based on the following schema:\n\n"
             f"{schema}\n\n"
@@ -52,10 +53,9 @@ class SQLQueryAgent:
         )
         response = self.llm([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
-        
-        # Log the generated query for debugging
+
+        # Validate and log the query
         logger.warning(f"Generated SQL query: {sql_query}")
-        
         if not sql_query.lower().startswith("select"):
             explanation_prompt = (
                 f"The following SQL query could not be generated for this user query: '{user_query}'.\n\n"
@@ -98,15 +98,20 @@ class DataAnalyzer:
     def analyze(self, user_query: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
         """Perform analysis with AI agents."""
         try:
+            # Extract schema
             schema = MetadataExtractionAgent.extract_schema(df)
+
+            # Generate SQL query using SQL Query Agent
             sql_query = self.sql_agent.generate_sql(user_query, schema, COLUMN_MAPPING)
+
+            # Execute the SQL query
             df_result = pd.read_sql_query(sql_query, self.conn)
             return df_result, sql_query
         except Exception as e:
             raise Exception(f"Analysis failed: {e}")
 
 def main():
-    st.title("AI Data Analyzer with Debugging")
+    st.title("AI Data Analyzer with SQL Query Agent")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
