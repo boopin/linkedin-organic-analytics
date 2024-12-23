@@ -7,7 +7,7 @@ langchain-openai==0.2.14
 sqlalchemy==2.0.36
 openpyxl==3.1.2
 pydantic==1.10.11
-langsmith==0.0.8
+langsmith==0.0.12
 
 
 
