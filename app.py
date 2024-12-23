@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import logging
-from typing import Tuple  # Fixed import for Tuple
+from typing import Tuple
 from langchain_community.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage
 
@@ -86,8 +86,16 @@ def main():
         st.info("Please upload a file to begin analysis.")
         st.stop()
 
-    # Load the dataset
-    df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('xlsx') else pd.read_csv(uploaded_file)
+    # Handle multi-sheet Excel files
+    if uploaded_file.name.endswith('xlsx'):
+        excel_file = pd.ExcelFile(uploaded_file)
+        sheet_names = excel_file.sheet_names
+        sheet_name = st.selectbox("Select the sheet to analyze", sheet_names)
+        df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+    else:
+        df = pd.read_csv(uploaded_file)
+
+    # Load the dataset into SQLite
     success, schema = st.session_state.analyzer.load_data(df)
 
     if success:
