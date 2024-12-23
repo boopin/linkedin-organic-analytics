@@ -1,6 +1,6 @@
 streamlit==1.41.1
-langchain==0.2.4
+langchain==0.2.4  # Stable version that doesn't require langchain_community
 plotly==5.24.1
 pandas==2.2.3
 openai==1.58.1
-sqlite3
+
