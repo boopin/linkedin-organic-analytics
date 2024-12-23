@@ -34,18 +34,27 @@ EXAMPLE_QUERIES = [
 class ColumnMappingAgent:
     """Handles dynamic mapping of user terms to dataset column names."""
     @staticmethod
+    def extract_columns_from_query(user_query: str, column_mapping: dict) -> list:
+        """Extract relevant column references from the user query."""
+        extracted_columns = []
+        for user_term, synonyms in column_mapping.items():
+            if any(synonym in user_query.lower() for synonym in synonyms):
+                extracted_columns.append(user_term)
+        return extracted_columns
+
+    @staticmethod
     def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
-        """Map user-friendly terms to actual dataset columns using fuzzy matching."""
+        """Map user-friendly terms to actual dataset columns."""
         available_columns = [col.lower() for col in df.columns]
-        updated_query = user_query.lower()
+        mapped_query = user_query.lower()
         for user_term, synonyms in column_mapping.items():
             for synonym in synonyms:
                 match = difflib.get_close_matches(synonym.lower(), available_columns, n=1, cutoff=0.6)
                 if match:
                     actual_column = df.columns[available_columns.index(match[0])]
-                    updated_query = updated_query.replace(user_term, actual_column)
+                    mapped_query = mapped_query.replace(user_term, actual_column)
                     break
-        return updated_query
+        return mapped_query
 
     @staticmethod
     def validate_query_columns(mapped_query: str, df: pd.DataFrame):
@@ -63,10 +72,18 @@ class SQLQueryAgent:
     def __init__(self, llm):
         self.llm = llm
 
+    def preprocess_query(self, user_query: str, column_mapping: dict, df: pd.DataFrame) -> str:
+        """Extract and map columns in the query."""
+        extracted_columns = ColumnMappingAgent.extract_columns_from_query(user_query, column_mapping)
+        if not extracted_columns:
+            raise ValueError("No valid columns found in the query. Please check your input.")
+        mapped_query = ColumnMappingAgent.map_columns(user_query, df, column_mapping)
+        ColumnMappingAgent.validate_query_columns(mapped_query, df)
+        return mapped_query
+
     def generate_sql(self, user_query: str, schema: str, df: pd.DataFrame) -> str:
         """Generate SQL query using GPT-4."""
-        mapped_query = ColumnMappingAgent.map_columns(user_query, df, COLUMN_MAPPING)
-        ColumnMappingAgent.validate_query_columns(mapped_query, df)
+        mapped_query = self.preprocess_query(user_query, COLUMN_MAPPING, df)
 
         # Generate the SQL query
         prompt = (
