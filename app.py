@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
-from langchain_openai.chat_models import ChatOpenAI
+from langchain.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage
 import logging
 import difflib
