@@ -91,7 +91,7 @@ class DynamicQueryParser:
             singular_term = DynamicQueryParser.singularize_term(term)
             match = difflib.get_close_matches(singular_term, available_columns, n=1, cutoff=0.6)
             if match:
-                actual_column = df.columns[available_columns.index(match[0])]
+                actual_column = df.columns[available_columns.index(match[0])].strip()
                 mapped_query = mapped_query.replace(term, actual_column)
 
         return mapped_query
