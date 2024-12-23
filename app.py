@@ -6,8 +6,6 @@ import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain.agents import Tool, initialize_agent, AgentType
-from langchain.agents.agent_toolkits import SQLDatabaseToolkit
 from langchain.sql_database import SQLDatabase
 
 # Configure logging
@@ -61,31 +59,35 @@ class DataAnalyzer:
             logger.error(f"Error loading data: {e}")
             return False, str(e)
 
-    def initialize_agent_with_tools(self):
+    def generate_sql(self, user_query: str):
         try:
-            db = SQLDatabase(self.conn)
-            toolkit = SQLDatabaseToolkit(db=db, llm=self.llm)
-
-            tools = toolkit.get_tools()
-            agent = initialize_agent(
-                tools, self.llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True
+            cursor = self.conn.cursor()
+            columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({self.current_table})").fetchall()]
+            prompt_template = PromptTemplate(
+                input_variables=["user_query", "columns"],
+                template="Generate an SQL query for the following request: {user_query}. The table has these columns: {columns}."
             )
-            return agent
+            chain = LLMChain(llm=self.llm, prompt=prompt_template)
+            sql_query = chain.run({"user_query": user_query, "columns": ", ".join(columns)})
+            return sql_query.strip()
         except Exception as e:
-            logger.error(f"Error initializing agent: {e}")
-            raise Exception("Failed to initialize the AI agent.")
+            logger.error(f"Error generating SQL: {e}")
+            raise Exception("SQL generation failed.")
 
-    def analyze_with_agent(self, user_query: str):
+    def analyze(self, user_query: str):
         try:
-            agent = self.initialize_agent_with_tools()
-            response = agent.run(user_query)
-            return response
+            sql_query = self.generate_sql(user_query)
+            logger.info(f"Executing query: {sql_query}")
+            df_result = pd.read_sql_query(sql_query, self.conn)
+            if df_result.empty:
+                raise ValueError("Query returned no data.")
+            return df_result, sql_query
         except Exception as e:
-            logger.error(f"Agent analysis error: {e}")
-            raise Exception(f"Agent analysis failed: {str(e)}")
+            logger.error(f"Analysis error: {e}")
+            raise Exception(f"Analysis failed: {str(e)}")
 
 def main():
-    st.title("AI-Driven Data Analyzer with Agents")
+    st.title("AI-Driven Data Analyzer")
     analyzer = DataAnalyzer()
 
     uploaded_file = st.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
@@ -101,10 +103,13 @@ def main():
             st.text(f"Schema:\n{schema_info}")
 
             user_query = st.text_area("Enter your query", placeholder="Show total impressions by quarter.")
-            if st.button("Run Query with AI Agent"):
+            if st.button("Run Query"):
                 try:
-                    response = analyzer.analyze_with_agent(user_query)
-                    st.text(response)
+                    result, sql_query = analyzer.analyze(user_query)
+                    st.dataframe(result)
+                    st.code(sql_query, language="sql")
+                    if len(result.columns) >= 2:
+                        st.plotly_chart(px.bar(result, x=result.columns[0], y=result.columns[1], title="Query Results"))
                 except Exception as e:
                     st.error(e)
         else:
