@@ -11,7 +11,7 @@ import difflib
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Column mapping for user-friendly queries
+# User-friendly column mapping
 COLUMN_MAPPING = {
     "total impressions": "impressions_(total)",
     "total clicks": "clicks_(total)",
@@ -21,17 +21,11 @@ COLUMN_MAPPING = {
     "engagement rate": "engagement_rate_(total)"
 }
 
-EXAMPLE_QUERIES = [
-    "Show me the top 5 dates with the highest total impressions.",
-    "What are the top 3 days with the most clicks?",
-    "Give me the total reactions grouped by month.",
-    "Show the top 5 posts with the highest engagement rate."
-]
-
 class MetadataExtractionAgent:
     """Extracts schema and metadata from the dataset."""
     @staticmethod
     def extract_schema(df: pd.DataFrame) -> str:
+        """Generates a schema string from the dataset."""
         schema = [f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)]
         return " | ".join(schema)
 
@@ -40,12 +34,15 @@ class ColumnMappingAgent:
     """Handles dynamic mapping of user terms to dataset column names."""
     @staticmethod
     def map_columns(user_query: str, df: pd.DataFrame, column_mapping: dict) -> str:
-        """Map user-friendly terms to actual dataset columns."""
-        available_columns = df.columns
+        """Map user-friendly terms to actual dataset columns using fuzzy matching."""
+        available_columns = [col.lower() for col in df.columns]  # Lowercase for consistency
         for user_term, expected_column in column_mapping.items():
-            match = difflib.get_close_matches(expected_column, available_columns, n=1, cutoff=0.7)
+            # Use fuzzy matching to find the closest match
+            match = difflib.get_close_matches(expected_column.lower(), available_columns, n=1, cutoff=0.6)
             if match:
-                user_query = user_query.replace(user_term, match[0])
+                # Replace the user-friendly term with the actual column name
+                actual_column = df.columns[available_columns.index(match[0])]  # Original case
+                user_query = user_query.replace(user_term, actual_column)
         return user_query
 
 
@@ -66,28 +63,27 @@ class SQLQueryAgent:
             f"Generate a valid SQL query for a SQLite database that matches this user query:\n"
             f"'{user_query}'.\n"
             f"Ensure the following:\n"
-            f"- If the query references dates, use appropriate SQL functions like `GROUP BY`.\n"
-            f"- Use `ORDER BY` to sort results by the metric specified in the query.\n"
-            f"- Replace 'table_name' with the actual table name 'data_table'.\n"
+            f"- Use the actual column names from the schema.\n"
+            f"- Replace placeholder table names with 'data_table'.\n"
             f"- Return a valid `SELECT` statement. If the query cannot be executed, explain why."
         )
         response = self.llm([HumanMessage(content=prompt)])
         sql_query = response.content.strip()
 
-        # Replace table_name with the actual table name
-        sql_query = sql_query.replace("table_name", "data_table")
+        # Replace placeholder table names with the actual table name
+        sql_query = sql_query.replace("table_name", "data_table").replace("your_table_name", "data_table")
 
         # Validate and log the query
         logger.warning(f"Generated SQL query: {sql_query}")
         if not sql_query.lower().startswith("select"):
             explanation_prompt = (
-                f"The following SQL query could not be generated for this user query: '{user_query}'.\n\n"
+                f"The SQL query generated for the user query: '{user_query}' failed.\n\n"
                 f"The dataset schema is: {schema}.\n"
-                f"Explain why the query failed and suggest an alternative query."
+                f"Explain why the query failed and provide an alternative SQL query."
             )
             explanation_response = self.llm([HumanMessage(content=explanation_prompt)])
             raise ValueError(f"Query generation failed: {explanation_response.content.strip()}")
-        
+
         return sql_query
 
 
@@ -145,8 +141,9 @@ class DataAnalyzer:
         except Exception as e:
             raise Exception(f"Analysis failed: {e}")
 
+
 def main():
-    st.title("AI Data Analyzer with Example Queries")
+    st.title("AI Data Analyzer with Robust Column Handling")
     if 'analyzer' not in st.session_state:
         st.session_state.analyzer = DataAnalyzer()
 
@@ -166,19 +163,19 @@ def main():
     success, schema = st.session_state.analyzer.load_data(df)
     if success:
         st.success("Data loaded successfully!")
-        
+
         # Display dataset schema in a dropdown
         with st.expander("View Dataset Schema"):
             schema_list = schema.split(" | ")
             for col in schema_list:
                 st.write(col)
-        
+
         # Show example queries
         st.write("### Example Queries")
-        for example in EXAMPLE_QUERIES:
-            st.markdown(f"- {example}")
-        
-        user_query = st.text_area("Enter your query", placeholder="e.g., Show me the top 5 dates with the highest total impressions.")
+        st.write("- Show me the top 5 dates with the highest total impressions.")
+        st.write("- Show me the top 5 posts with the highest impressions.")
+
+        user_query = st.text_area("Enter your query", placeholder="e.g., Show me the top 5 posts with the highest impressions.")
         if st.button("Analyze"):
             try:
                 with st.spinner("Analyzing your data..."):
@@ -191,6 +188,7 @@ def main():
                 st.error(str(e))
     else:
         st.error(f"Failed to load data: {schema}")
+
 
 if __name__ == "__main__":
     main()
