@@ -1,24 +1,23 @@
-# App Version: 1.3.0
+# App Version: 1.1.2
 import streamlit as st
 import pandas as pd
 import sqlite3
+import plotly.express as px
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import HumanMessage, AIMessage
+import logging
+import difflib
+import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
-import logging
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage
 
 # Configure logging
-logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
-
-# Initialize GPT-4 through LangChain
-openai_api_key = st.secrets["openai_api_key"]  # Ensure API key is securely stored in Streamlit secrets
-llm = ChatOpenAI(temperature=0.0, openai_api_key=openai_api_key)
 
 DEFAULT_COLUMNS = {
     "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
-    "metrics": ["date", "impressions_total", "clicks", "engagement_rate"],
+    "metrics": ["date", "impressions", "clicks", "engagement_rate"],
 }
 
 EXAMPLE_QUERIES = [
@@ -29,83 +28,124 @@ EXAMPLE_QUERIES = [
     "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
     "What are the engagement rates for Q3 2024?",
     "Show impressions by day for last week.",
-    "Show me the top 5 posts with the highest engagement rate.",
+    "Show me the top 5 posts with the highest engagement rate."
 ]
 
-def create_schemas(df: pd.DataFrame, table_name: str, conn):
-    """Prepares weekly, monthly, and quarterly schemas."""
-    schemas = []
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df["month"] = df["date"].dt.to_period("M").astype(str)
-        df["week"] = df["date"].dt.to_period("W").astype(str)
-        df["quarter"] = df["date"].dt.to_period("Q").astype(str)
-        
-        for schema in ["month", "week", "quarter"]:
-            schema_name = f"{table_name}_{schema}"
-            schema_df = df.groupby(schema).sum().reset_index()
-            schema_df.to_sql(schema_name, conn, index=False, if_exists="replace")
-            schemas.append(schema_name)
-            logger.info(f"Schema '{schema_name}' created.")
-    return schemas
+class PreprocessingPipeline:
+    @staticmethod
+    def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
+        df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
+        return df
 
-def process_file(uploaded_file, conn):
-    """Processes the uploaded file and creates database tables."""
-    table_names = []
-    schemas = []
+    @staticmethod
+    def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        return df
 
-    if uploaded_file.name.endswith(".xlsx"):
-        excel_data = pd.ExcelFile(uploaded_file)
-        for sheet in excel_data.sheet_names:
-            df = pd.read_excel(excel_data, sheet_name=sheet)
-            table_name = sheet.lower().replace(" ", "_").replace("-", "_")
-            df.to_sql(table_name, conn, index=False, if_exists="replace")
-            table_names.append(table_name)
-            schemas.extend(create_schemas(df, table_name, conn))
-            logger.info(f"Sheet '{sheet}' processed into table '{table_name}'.")
+    @staticmethod
+    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
+        for col in df.columns:
+            if df[col].dtype == "object":
+                df[col] = df[col].astype("string", errors="ignore")
+        return df
 
-    elif uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-        table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
-        df.to_sql(table_name, conn, index=False, if_exists="replace")
-        table_names.append(table_name)
-        schemas.extend(create_schemas(df, table_name, conn))
-        logger.info(f"CSV file processed into table '{table_name}'.")
+    @staticmethod
+    def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
+        df = PreprocessingPipeline.clean_column_names(df)
+        df = PreprocessingPipeline.handle_missing_dates(df)
+        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
+        return df
 
-    return table_names, schemas
+def preprocess_dataframe_for_arrow(df):
+    """
+    Preprocess the dataframe to ensure all columns are compatible with Arrow serialization.
+    """
+    for col in df.columns:
+        if pd.api.types.is_object_dtype(df[col]):
+            df[col] = df[col].astype("string")  # Convert object columns to string
+        elif pd.api.types.is_categorical_dtype(df[col]):
+            df[col] = df[col].astype("string")  # Convert categorical columns to string
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].astype("datetime64[ns]")  # Ensure proper datetime format
+    return df
 
-def generate_sql_prompt(user_prompt, selected_table, columns):
-    """Uses GPT-4 via LangChain to generate SQL queries from user prompts."""
-    context = f"The table '{selected_table}' has the following columns: {', '.join(columns)}."
-    message = f"{context} Convert the following user prompt into a valid SQL query: {user_prompt}"
+def parse_date_range(query):
+    """Extracts and converts date ranges from natural language to SQL-compatible formats."""
+    today = datetime.today()
+    if "last week" in query.lower():
+        start_date = (today - relativedelta(weeks=1)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    elif "last month" in query.lower():
+        start_date = (today - relativedelta(months=1)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    elif match := re.search(r"Q(\d) (\d{4})", query):
+        quarter = int(match.group(1))
+        year = int(match.group(2))
+        start_date = f"{year}-{'01' if quarter == 1 else '04' if quarter == 2 else '07' if quarter == 3 else '10'}-01"
+        end_date = f"{year}-{'03-31' if quarter == 1 else '06-30' if quarter == 2 else '09-30' if quarter == 3 else '12-31'}"
+    else:
+        start_date, end_date = None, None
+    return start_date, end_date
+
+def parse_columns_and_filters(query, available_columns):
+    """Extracts desired columns and additional filters from the user query."""
+    columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in available_columns) + r")\b", query, re.IGNORECASE)
+    start_date, end_date = parse_date_range(query)
+    return list(set(columns)), start_date, end_date
+
+def extract_data(query, database_connection):
+    """Extracts data from the database using SQL queries."""
     try:
-        response = llm([HumanMessage(content=message)])
-        return response.content.strip()
+        df = pd.read_sql_query(query, database_connection)
+        return preprocess_dataframe_for_arrow(df)  # Ensure compatibility for Arrow serialization
     except Exception as e:
-        logger.error(f"GPT-4 Error: {e}")
-        return None
+        return {"error": str(e)}
 
 def main():
-    st.title("AI-Driven Data Analyzer with GPT-4 Integration")
+    st.title("AI Reports Analyzer with LangChain Workflow")
+
+    openai_api_key = st.secrets["OPENAI_API_KEY"]  # Ensure API key is securely stored in Streamlit secrets
+    llm = ChatOpenAI(temperature=0.3, openai_api_key=openai_api_key)
+
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    
-    conn = sqlite3.connect(":memory:")
-    table_names, schemas = [], []
+    if not uploaded_file:
+        st.info("Please upload a file.")
+        return
 
-    if uploaded_file and st.button("Process File"):
-        try:
-            table_names, schemas = process_file(uploaded_file, conn)
-            st.success("File successfully processed and saved to the database!")
-            st.write("### Available Tables:")
-            st.write(table_names)
-        except Exception as e:
-            st.error(f"Error during processing: {e}")
-            logger.error(f"Processing error: {e}")
-            return
+    try:
+        conn = sqlite3.connect(":memory:")
+        table_names = []
 
-    if table_names:
-        st.write("### Schema Selection")
-        selected_table = st.selectbox("Select a table to query:", table_names + schemas)
+        # Load and preprocess the uploaded file
+        if uploaded_file.name.endswith('.xlsx'):
+            excel_data = pd.ExcelFile(uploaded_file)
+            sheet_names = excel_data.sheet_names
+            logger.info(f"Excel file loaded with sheets: {sheet_names}")
+
+            for sheet in sheet_names:
+                df = pd.read_excel(excel_data, sheet_name=sheet)
+                df = PreprocessingPipeline.preprocess_data(df)
+                table_name = sheet.lower().replace(" ", "_").replace("-", "_")
+                df.to_sql(table_name, conn, index=False, if_exists="replace")
+                table_names.append(table_name)
+                logger.info(f"Sheet '{sheet}' loaded into table '{table_name}'.")
+
+        elif uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+            df = PreprocessingPipeline.preprocess_data(df)
+            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
+            df.to_sql(table_name, conn, index=False, if_exists="replace")
+            table_names.append(table_name)
+            logger.info("CSV file loaded successfully.")
+
+        else:
+            raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
+
+        st.success("Data successfully loaded into the database!")
+
+        # Let the user select a table
+        selected_table = st.selectbox("Select a table to query:", table_names)
 
         st.write("### Example Queries")
         for example in EXAMPLE_QUERIES:
@@ -114,32 +154,40 @@ def main():
         user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
+            if not user_query.strip():
+                st.error("Please enter a valid query or prompt.")
+                return
+
             try:
-                if not user_query.strip():
-                    st.error("Please enter a valid query.")
-                    return
-                
-                # Get table schema for SQL generation
+                # Extract available columns for validation
                 columns_query = f"PRAGMA table_info({selected_table});"
                 columns_info = pd.read_sql_query(columns_query, conn)
-                available_columns = [col["name"] for col in columns_info.to_dict(orient="records")]
+                available_columns = [col['name'] for col in columns_info.to_dict(orient='records')]
 
-                # Generate SQL query using GPT-4
-                sql_query = generate_sql_prompt(user_query, selected_table, available_columns)
-                if not sql_query:
-                    st.error("Failed to generate SQL query.")
-                    return
+                # Parse columns and date filters
+                desired_columns, start_date, end_date = parse_columns_and_filters(user_query, available_columns)
+                if not desired_columns:
+                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])  # Use default columns if none are specified
 
+                # Construct SQL query
+                where_clause = f"WHERE date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
+                sql_query = f"SELECT {', '.join(desired_columns)} FROM {selected_table} {where_clause} ORDER BY {desired_columns[-1]} DESC LIMIT 10"
                 st.info(f"Generated SQL Query:\n{sql_query}")
-                
+
                 # Execute the query
-                query_result = pd.read_sql_query(sql_query, conn)
-                st.write("### Query Results")
-                st.dataframe(query_result)
+                query_result = extract_data(sql_query, conn)
+                if isinstance(query_result, dict) and "error" in query_result:
+                    st.error(f"Query failed: {query_result['error']}")
+                else:
+                    st.write("### Query Results")
+                    st.dataframe(query_result)
 
             except Exception as e:
-                st.error(f"Query execution failed: {e}")
-                logger.error(f"Query execution error: {e}")
+                st.error(f"An error occurred: {e}")
+
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
