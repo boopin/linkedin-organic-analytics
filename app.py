@@ -2,8 +2,7 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import logging
 
@@ -11,119 +10,109 @@ import logging
 logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
-# Default columns for each schema
 DEFAULT_COLUMNS = {
-    "raw": ["date", "impressions", "clicks", "engagement_rate"],
-    "monthly": ["month", "impressions", "clicks", "engagement_rate"],
-    "weekly": ["week", "impressions", "clicks", "engagement_rate"],
-    "quarterly": ["quarter", "impressions", "clicks", "engagement_rate"],
+    "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
+    "metrics": ["date", "impressions_total", "clicks", "engagement_rate"],
 }
 
-def preprocess_and_create_schemas(df: pd.DataFrame, conn: sqlite3.Connection, table_name: str):
-    """Preprocess the dataframe and create schemas for raw, monthly, weekly, and quarterly data."""
-    # Raw schema
-    df.to_sql(f"{table_name}_raw", conn, index=False, if_exists="replace")
+EXAMPLE_QUERIES = [
+    "Show me the top 5 dates with the highest total impressions.",
+    "Show me the posts with the most clicks.",
+    "What is the average engagement rate of all posts?",
+    "Generate a bar graph of clicks grouped by post type.",
+    "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
+    "What are the engagement rates for Q3 2024?",
+    "Show impressions by day for last week.",
+    "Show me the top 5 posts with the highest engagement rate.",
+]
 
-    # Add additional time-based columns
-    df["month"] = df["date"].dt.to_period("M")
-    df["week"] = df["date"].dt.to_period("W")
-    df["quarter"] = df["date"].dt.to_period("Q")
+def create_schemas(df: pd.DataFrame, table_name: str, conn):
+    """Prepares weekly, monthly, and quarterly schemas."""
+    schemas = []
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["month"] = df["date"].dt.to_period("M").astype(str)
+        df["week"] = df["date"].dt.to_period("W").astype(str)
+        df["quarter"] = df["date"].dt.to_period("Q").astype(str)
+        
+        for schema in ["month", "week", "quarter"]:
+            schema_name = f"{table_name}_{schema}"
+            schema_df = df.groupby(schema).sum().reset_index()
+            schema_df.to_sql(schema_name, conn, index=False, if_exists="replace")
+            schemas.append(schema_name)
+            logger.info(f"Schema '{schema_name}' created.")
+    return schemas
 
-    # Monthly schema
-    monthly_df = df.groupby("month").sum().reset_index()
-    monthly_df.to_sql(f"{table_name}_monthly", conn, index=False, if_exists="replace")
+def process_file(uploaded_file, conn):
+    """Processes the uploaded file and creates database tables."""
+    table_names = []
+    schemas = []
 
-    # Weekly schema
-    weekly_df = df.groupby("week").sum().reset_index()
-    weekly_df.to_sql(f"{table_name}_weekly", conn, index=False, if_exists="replace")
+    if uploaded_file.name.endswith(".xlsx"):
+        excel_data = pd.ExcelFile(uploaded_file)
+        for sheet in excel_data.sheet_names:
+            df = pd.read_excel(excel_data, sheet_name=sheet)
+            table_name = sheet.lower().replace(" ", "_").replace("-", "_")
+            df.to_sql(table_name, conn, index=False, if_exists="replace")
+            table_names.append(table_name)
+            schemas.extend(create_schemas(df, table_name, conn))
+            logger.info(f"Sheet '{sheet}' processed into table '{table_name}'.")
 
-    # Quarterly schema
-    quarterly_df = df.groupby("quarter").sum().reset_index()
-    quarterly_df.to_sql(f"{table_name}_quarterly", conn, index=False, if_exists="replace")
+    elif uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
+        df.to_sql(table_name, conn, index=False, if_exists="replace")
+        table_names.append(table_name)
+        schemas.extend(create_schemas(df, table_name, conn))
+        logger.info(f"CSV file processed into table '{table_name}'.")
 
-    logger.info(f"Schemas created for table: {table_name}")
-    return [f"{table_name}_raw", f"{table_name}_monthly", f"{table_name}_weekly", f"{table_name}_quarterly"]
-
-def display_schema_columns(selected_schema: str, conn: sqlite3.Connection):
-    """Display available columns for the selected schema."""
-    columns_query = f"PRAGMA table_info({selected_schema});"
-    columns_info = pd.read_sql_query(columns_query, conn)
-    available_columns = [col["name"] for col in columns_info.to_dict(orient="records")]
-    st.write("### Available Columns in the Selected Schema")
-    st.write(", ".join(available_columns))
-    return available_columns
+    return table_names, schemas
 
 def main():
-    st.title("AI Reports Analyzer with Enhanced Schema Support")
-
+    st.title("AI-Driven Data Analyzer")
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+    
     if not uploaded_file:
-        st.info("Please upload a file.")
+        st.info("Please upload a file to get started.")
         return
+    
+    conn = sqlite3.connect(":memory:")
+    table_names, schemas = [], []
+    
+    if st.button("Process File"):
+        try:
+            table_names, schemas = process_file(uploaded_file, conn)
+            st.success("File successfully processed and saved to the database!")
+            st.write("### Available Tables:")
+            st.write(table_names)
+        except Exception as e:
+            st.error(f"Error during processing: {e}")
+            logger.error(f"Processing error: {e}")
+            return
 
-    try:
-        conn = sqlite3.connect(":memory:")
-        schemas = []
-
-        # Load and preprocess uploaded file
-        if uploaded_file.name.endswith(".xlsx"):
-            excel_data = pd.ExcelFile(uploaded_file)
-            for sheet_name in excel_data.sheet_names:
-                df = pd.read_excel(excel_data, sheet_name=sheet_name)
-                df["date"] = pd.to_datetime(df["date"], errors="coerce")
-                table_name = sheet_name.lower().replace(" ", "_")
-                schemas.extend(preprocess_and_create_schemas(df, conn, table_name))
-
-        elif uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_")
-            schemas.extend(preprocess_and_create_schemas(df, conn, table_name))
-
-        else:
-            raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
-
-        st.success("Data successfully loaded and schemas created!")
-
-        # Allow the user to select a schema
+    if schemas:
+        st.write("### Schema Selection")
         selected_schema = st.selectbox("Select a schema to query:", schemas)
-
-        # Display schema-specific columns
-        available_columns = display_schema_columns(selected_schema, conn)
-
-        # Provide example queries
         st.write("### Example Queries")
-        st.write("- Show me impressions_total for July 2024")
-        st.write("- Compare engagement rate between Q3 and Q2 2024")
+        for example in EXAMPLE_QUERIES:
+            st.markdown(f"- {example}")
 
-        # Input query
         user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
-            if not user_query.strip():
-                st.error("Please enter a valid query or prompt.")
-                return
-
             try:
-                # Construct SQL query
-                if "compare" in user_query.lower():
-                    st.warning("Comparison functionality is under development.")
-                else:
-                    sql_query = f"SELECT * FROM {selected_schema} WHERE impressions_total > 0 LIMIT 10"  # Simplified example
-                    st.info(f"Generated SQL Query:\n{sql_query}")
-
-                    # Execute and display the query
-                    query_result = pd.read_sql_query(sql_query, conn)
-                    st.write("### Query Results")
-                    st.dataframe(query_result)
+                if not user_query.strip():
+                    st.error("Please enter a valid query.")
+                    return
+                
+                # Execute user query
+                query_result = pd.read_sql_query(user_query, conn)
+                st.write("### Query Results")
+                st.dataframe(query_result)
 
             except Exception as e:
-                logger.error(f"Query Error: {e}")
-                st.error(f"An error occurred: {e}")
-
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        st.error(f"Error: {e}")
+                st.error(f"Query execution failed: {e}")
+                logger.error(f"Query execution error: {e}")
 
 if __name__ == "__main__":
     main()
