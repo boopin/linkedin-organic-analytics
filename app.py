@@ -1,4 +1,4 @@
-# App Version: 1.0.6
+# App Version: 1.0.7
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -68,43 +68,16 @@ def extract_data(query, database_connection):
     except Exception as e:
         return {"error": str(e)}
 
-def analyze_data(data):
-    """Analyzes and interprets the extracted data."""
-    if isinstance(data, dict) and "error" in data:
-        return data["error"]
-    # Perform sample analysis
-    return {
-        "rows": len(data),
-        "columns": list(data.columns),
-        "sample_data": data.head(5).to_dict()
-    }
+def main():
+    st.title("AI Reports Analyzer with LangChain Workflow")
 
-def execute_workflow(query, db_connection):
-    """
-    Execute a simplified workflow using LangChain for task orchestration.
-    """
-    logger.info("Starting workflow execution.")
+    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
+    if not uploaded_file:
+        st.info("Please upload a file.")
+        return
 
-    # Step 1: Extract Data
-    logger.info("Executing data extraction task.")
-    extracted_data = extract_data(query, db_connection)
-    if isinstance(extracted_data, dict) and "error" in extracted_data:
-        logger.error(f"Data extraction failed: {extracted_data['error']}")
-        return {"error": extracted_data["error"]}
-
-    # Step 2: Analyze Data
-    logger.info("Executing data analysis task.")
-    analysis_result = analyze_data(extracted_data)
-
-    logger.info("Workflow execution completed.")
-    return {
-        "extracted_data": extracted_data,
-        "analysis_result": analysis_result
-    }
-
-def load_file(uploaded_file):
-    """Load CSV or Excel and return a pandas DataFrame."""
     try:
+        # Load and preprocess the uploaded file
         if uploaded_file.name.endswith('.xlsx'):
             excel_data = pd.ExcelFile(uploaded_file)
             sheet_names = excel_data.sheet_names
@@ -119,46 +92,35 @@ def load_file(uploaded_file):
             logger.info("CSV file loaded successfully.")
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
-        return df
-    except Exception as e:
-        logger.error(f"Error loading file: {e}")
-        st.error(f"Error loading file: {e}")
-        raise
 
-def main():
-    st.title("AI Reports Analyzer with LangChain Workflow")
-
-    uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
-    if not uploaded_file:
-        st.info("Please upload a file.")
-        return
-
-    try:
-        df = load_file(uploaded_file)
-
-        # Preprocess data for SQLite
         df = preprocess_dataframe_for_arrow(df)
 
         # Load data into SQLite
         conn = sqlite3.connect(":memory:")
         df.to_sql("uploaded_data", conn, index=False, if_exists="replace")
 
-        # Define a query for extraction
-        query = "SELECT * FROM uploaded_data LIMIT 10;"
+        st.success("Data successfully loaded into the database!")
 
-        # Execute the workflow
-        results = execute_workflow(query, conn)
+        # Provide a text box for SQL query input
+        user_query = st.text_area("Enter your query (e.g., 'SELECT * FROM uploaded_data LIMIT 5;')", "")
 
-        if "error" in results:
-            st.error(f"Workflow failed: {results['error']}")
-        else:
-            st.write("### Extracted Data")
-            st.dataframe(results["extracted_data"])
+        if st.button("Run Query"):
+            if not user_query.strip():
+                st.error("Please enter a valid query.")
+                return
 
-            st.write("### Analysis Results")
-            st.json(results["analysis_result"])
-
+            # Execute the query and display results
+            try:
+                query_result = extract_data(user_query, conn)
+                if isinstance(query_result, dict) and "error" in query_result:
+                    st.error(f"Query failed: {query_result['error']}")
+                else:
+                    st.write("### Query Results")
+                    st.dataframe(query_result)
+            except Exception as e:
+                st.error(f"An error occurred while processing your query: {e}")
     except Exception as e:
+        logger.error(f"Error: {e}")
         st.error(f"Error: {e}")
 
 if __name__ == "__main__":
