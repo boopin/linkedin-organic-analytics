@@ -1,4 +1,4 @@
-# App Version: 1.1.1
+# App Version: 1.2.0
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -16,7 +16,7 @@ logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asct
 logger = logging.getLogger()
 
 DEFAULT_COLUMNS = {
-    "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
+    "all_posts": ["post_title", "post_link", "likes", "engagement_rate", "date"],
     "metrics": ["date", "impressions", "clicks", "engagement_rate"],
 }
 
@@ -57,19 +57,6 @@ class PreprocessingPipeline:
         df = PreprocessingPipeline.fix_arrow_incompatibility(df)
         return df
 
-def preprocess_dataframe_for_arrow(df):
-    """
-    Preprocess the dataframe to ensure all columns are compatible with Arrow serialization.
-    """
-    for col in df.columns:
-        if pd.api.types.is_object_dtype(df[col]):
-            df[col] = df[col].astype("string")  # Convert object columns to string
-        elif pd.api.types.is_categorical_dtype(df[col]):
-            df[col] = df[col].astype("string")  # Convert categorical columns to string
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].astype("datetime64[ns]")  # Ensure proper datetime format
-    return df
-
 def parse_date_range(query):
     """Extracts and converts date ranges from natural language to SQL-compatible formats."""
     today = datetime.today()
@@ -98,7 +85,7 @@ def extract_data(query, database_connection):
     """Extracts data from the database using SQL queries."""
     try:
         df = pd.read_sql_query(query, database_connection)
-        return preprocess_dataframe_for_arrow(df)  # Ensure compatibility for Arrow serialization
+        return df
     except Exception as e:
         return {"error": str(e)}
 
