@@ -6,7 +6,6 @@ import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage
 import logging
-import difflib
 import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -16,7 +15,7 @@ logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asct
 logger = logging.getLogger()
 
 DEFAULT_COLUMNS = {
-    "all_posts": ["post_title", "post_link", "likes", "engagement_rate", "date"],
+    "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
     "metrics": ["date", "impressions", "clicks", "engagement_rate"],
 }
 
@@ -44,21 +43,22 @@ class PreprocessingPipeline:
         return df
 
     @staticmethod
-    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
-        for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype("string", errors="ignore")
-        return df
-
-    @staticmethod
     def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
         df = PreprocessingPipeline.clean_column_names(df)
         df = PreprocessingPipeline.handle_missing_dates(df)
-        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
         return df
 
+def preprocess_dataframe_for_arrow(df):
+    for col in df.columns:
+        if pd.api.types.is_object_dtype(df[col]):
+            df[col] = df[col].astype("string")
+        elif pd.api.types.is_categorical_dtype(df[col]):
+            df[col] = df[col].astype("string")
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].astype("datetime64[ns]")
+    return df
+
 def parse_date_range(query):
-    """Extracts and converts date ranges from natural language to SQL-compatible formats."""
     today = datetime.today()
     if "last week" in query.lower():
         start_date = (today - relativedelta(weeks=1)).strftime("%Y-%m-%d")
@@ -76,16 +76,26 @@ def parse_date_range(query):
     return start_date, end_date
 
 def parse_columns_and_filters(query, available_columns):
-    """Extracts desired columns and additional filters from the user query."""
-    columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in available_columns) + r")\b", query, re.IGNORECASE)
+    column_mapping = {
+        "post title": "post_title",
+        "post link": "post_link",
+        "posted by": "posted_by",
+        "likes": "likes",
+        "engagement rate": "engagement_rate",
+        "date": "date",
+    }
+    columns = []
+    for user_col, db_col in column_mapping.items():
+        if re.search(rf"\b{re.escape(user_col)}\b", query, re.IGNORECASE):
+            columns.append(db_col)
+    columns = [col for col in columns if col in available_columns]
     start_date, end_date = parse_date_range(query)
     return list(set(columns)), start_date, end_date
 
 def extract_data(query, database_connection):
-    """Extracts data from the database using SQL queries."""
     try:
         df = pd.read_sql_query(query, database_connection)
-        return df
+        return preprocess_dataframe_for_arrow(df)
     except Exception as e:
         return {"error": str(e)}
 
@@ -101,34 +111,26 @@ def main():
         conn = sqlite3.connect(":memory:")
         table_names = []
 
-        # Load and preprocess the uploaded file
         if uploaded_file.name.endswith('.xlsx'):
             excel_data = pd.ExcelFile(uploaded_file)
-            sheet_names = excel_data.sheet_names
-            logger.info(f"Excel file loaded with sheets: {sheet_names}")
-
-            for sheet in sheet_names:
+            for sheet in excel_data.sheet_names:
                 df = pd.read_excel(excel_data, sheet_name=sheet)
                 df = PreprocessingPipeline.preprocess_data(df)
-                table_name = sheet.lower().replace(" ", "_").replace("-", "_")
+                table_name = sheet.lower().replace(" ", "_")
                 df.to_sql(table_name, conn, index=False, if_exists="replace")
                 table_names.append(table_name)
-                logger.info(f"Sheet '{sheet}' loaded into table '{table_name}'.")
 
         elif uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
             df = PreprocessingPipeline.preprocess_data(df)
-            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
+            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_")
             df.to_sql(table_name, conn, index=False, if_exists="replace")
             table_names.append(table_name)
-            logger.info("CSV file loaded successfully.")
 
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
 
         st.success("Data successfully loaded into the database!")
-
-        # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
 
         st.write("### Example Queries")
@@ -143,22 +145,18 @@ def main():
                 return
 
             try:
-                # Extract available columns for validation
                 columns_query = f"PRAGMA table_info({selected_table});"
                 columns_info = pd.read_sql_query(columns_query, conn)
-                available_columns = [col['name'] for col in columns_info.to_dict(orient='records')]
+                available_columns = [col["name"] for col in columns_info.to_dict(orient='records')]
 
-                # Parse columns and date filters
                 desired_columns, start_date, end_date = parse_columns_and_filters(user_query, available_columns)
                 if not desired_columns:
-                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])  # Use default columns if none are specified
+                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])
 
-                # Construct SQL query
                 where_clause = f"WHERE date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
                 sql_query = f"SELECT {', '.join(desired_columns)} FROM {selected_table} {where_clause} ORDER BY {desired_columns[-1]} DESC LIMIT 10"
                 st.info(f"Generated SQL Query:\n{sql_query}")
 
-                # Execute the query
                 query_result = extract_data(sql_query, conn)
                 if isinstance(query_result, dict) and "error" in query_result:
                     st.error(f"Query failed: {query_result['error']}")
