@@ -5,5 +5,4 @@ openpyxl==3.1.2
 pyarrow==12.0.0
 langchain==0.0.354
 langchain-openai==0.0.5
-crew-ai==0.28.8
 
