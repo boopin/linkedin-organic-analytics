@@ -1,9 +1,8 @@
-# App Version: 1.2.0
+# App Version: 1.3.0
 import streamlit as st
 import pandas as pd
 import sqlite3
-import plotly.express as px
-from langchain_openai import ChatOpenAI  # Updated import for langchain-openai
+from langchain_openai import ChatOpenAI
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import logging
@@ -56,7 +55,7 @@ def generate_sql_query(query, table_name, available_columns):
         if "top" in query.lower():
             match = re.search(r"top (\d+)", query, re.IGNORECASE)
             limit = match.group(1) if match else "10"
-            columns = DEFAULT_COLUMNS.get(table_name, [])
+            columns = [col for col in DEFAULT_COLUMNS.get(table_name, []) if col in available_columns]
             sql_query = f"SELECT {', '.join(columns)} FROM {table_name} ORDER BY {columns[-1]} DESC LIMIT {limit}"
             return sql_query
         return None
@@ -100,6 +99,13 @@ def main():
         st.success("File successfully processed and saved to the database!")
         selected_table = st.selectbox("Select a table to query:", table_names)
 
+        # Display schema dropdown for the selected table
+        schema_query = f"PRAGMA table_info({selected_table});"
+        schema_info = pd.read_sql_query(schema_query, conn)
+        available_columns = [col['name'] for col in schema_info.to_dict(orient='records')]
+        st.write("### Available Columns in the Selected Table")
+        st.multiselect("Select columns for analysis:", options=available_columns, default=available_columns)
+
         st.write("### Example Queries")
         for example in EXAMPLE_QUERIES:
             st.markdown(f"- {example}")
@@ -112,10 +118,6 @@ def main():
                 return
 
             try:
-                columns_query = f"PRAGMA table_info({selected_table});"
-                columns_info = pd.read_sql_query(columns_query, conn)
-                available_columns = [col['name'] for col in columns_info.to_dict(orient='records')]
-
                 sql_query = generate_sql_query(user_query, selected_table, available_columns)
                 if not sql_query:
                     st.error("Could not generate a valid SQL query.")
