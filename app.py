@@ -1,4 +1,4 @@
-# App Version: 1.0.10
+# App Version: 1.1.0
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -110,13 +110,6 @@ def main():
         # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
 
-        # Display column names to assist in query construction
-        st.subheader("Available Columns in the Selected Table")
-        columns_query = f"PRAGMA table_info({selected_table});"
-        columns_info = pd.read_sql_query(columns_query, conn)
-        columns_list = [{"name": col['name'], "type": col['type']} for col in columns_info.to_dict(orient='records')]
-        st.write(columns_list)
-
         # Show example queries and provide a text box for SQL query input
         st.subheader("Example Queries")
         for example in EXAMPLE_QUERIES:
@@ -134,7 +127,7 @@ def main():
                 try:
                     openai = ChatOpenAI(temperature=0)
                     messages = [
-                        HumanMessage(content=f"Generate an SQL query based on this prompt: '{user_query}'. The table is '{selected_table}' with columns: {', '.join(col['name'] for col in columns_list)}")
+                        HumanMessage(content=f"Generate an SQL query based on this prompt: '{user_query}'. The table is '{selected_table}'.")
                     ]
                     response = openai(messages)
                     user_query = response.content.strip()
