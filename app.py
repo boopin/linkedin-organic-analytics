@@ -2,17 +2,13 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import plotly.express as px
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage, AIMessage
 import logging
-import difflib
 import re
 from datetime import datetime
-from dateutil.relativedelta import relativedelta
+from difflib import get_close_matches
 
 # Configure logging
-logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
 DEFAULT_COLUMNS = {
@@ -26,78 +22,30 @@ EXAMPLE_QUERIES = [
     "What is the average engagement rate of all posts?",
     "Generate a bar graph of clicks grouped by post type.",
     "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
-    "What are the engagement rates for Q3 2024?",
-    "Show impressions by day for last week.",
-    "Show me the top 5 posts with the highest engagement rate."
 ]
 
-class PreprocessingPipeline:
-    @staticmethod
-    def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-        df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
-        return df
+def get_schema(table_name, conn):
+    """Fetches the schema (column names) of the selected table."""
+    query = f"PRAGMA table_info({table_name});"
+    try:
+        schema = pd.read_sql_query(query, conn)
+        return schema["name"].tolist()
+    except Exception as e:
+        logger.error(f"Error fetching schema for table {table_name}: {e}")
+        return []
 
-    @staticmethod
-    def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
+def map_column_name(user_input, available_columns):
+    """Maps user-friendly column names to actual column names using fuzzy matching."""
+    matched_column = get_close_matches(user_input.lower(), available_columns, n=1, cutoff=0.6)
+    return matched_column[0] if matched_column else None
 
-    @staticmethod
-    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
-        for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype("string", errors="ignore")
-        return df
-
-    @staticmethod
-    def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
-        df = PreprocessingPipeline.clean_column_names(df)
-        df = PreprocessingPipeline.handle_missing_dates(df)
-        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
-        return df
-
-def preprocess_dataframe_for_arrow(df):
-    for col in df.columns:
-        if pd.api.types.is_object_dtype(df[col]):
-            df[col] = df[col].astype("string")
-        elif pd.api.types.is_categorical_dtype(df[col]):
-            df[col] = df[col].astype("string")
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].astype("datetime64[ns]")
+def preprocess_dataframe(df):
+    """Preprocess the dataframe to standardize column names."""
+    df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
     return df
 
-def parse_date_range(query):
-    today = datetime.today()
-    if "last week" in query.lower():
-        start_date = (today - relativedelta(weeks=1)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-    elif "last month" in query.lower():
-        start_date = (today - relativedelta(months=1)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-    elif match := re.search(r"Q(\d) (\d{4})", query):
-        quarter = int(match.group(1))
-        year = int(match.group(2))
-        start_date = f"{year}-{'01' if quarter == 1 else '04' if quarter == 2 else '07' if quarter == 3 else '10'}-01"
-        end_date = f"{year}-{'03-31' if quarter == 1 else '06-30' if quarter == 2 else '09-30' if quarter == 3 else '12-31'}"
-    else:
-        start_date, end_date = None, None
-    return start_date, end_date
-
-def parse_columns_and_filters(query, available_columns):
-    columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in available_columns) + r")\b", query, re.IGNORECASE)
-    start_date, end_date = parse_date_range(query)
-    return list(set(columns)), start_date, end_date
-
-def extract_data(query, database_connection):
-    try:
-        df = pd.read_sql_query(query, database_connection)
-        return preprocess_dataframe_for_arrow(df)
-    except Exception as e:
-        return {"error": str(e)}
-
 def main():
-    st.title("AI Reports Analyzer with LangChain Workflow")
+    st.title("AI-Powered SQL Query App")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     if not uploaded_file:
@@ -108,38 +56,36 @@ def main():
         conn = sqlite3.connect(":memory:")
         table_names = []
 
-        if uploaded_file.name.endswith('.xlsx'):
+        # Load the uploaded file
+        if uploaded_file.name.endswith(".xlsx"):
             excel_data = pd.ExcelFile(uploaded_file)
-            sheet_names = excel_data.sheet_names
-            logger.info(f"Excel file loaded with sheets: {sheet_names}")
-
-            for sheet in sheet_names:
+            for sheet in excel_data.sheet_names:
                 df = pd.read_excel(excel_data, sheet_name=sheet)
-                df = PreprocessingPipeline.preprocess_data(df)
+                df = preprocess_dataframe(df)
                 table_name = sheet.lower().replace(" ", "_").replace("-", "_")
                 df.to_sql(table_name, conn, index=False, if_exists="replace")
                 table_names.append(table_name)
-                logger.info(f"Sheet '{sheet}' loaded into table '{table_name}'.")
 
-        elif uploaded_file.name.endswith('.csv'):
+        elif uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
-            df = PreprocessingPipeline.preprocess_data(df)
+            df = preprocess_dataframe(df)
             table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
             df.to_sql(table_name, conn, index=False, if_exists="replace")
             table_names.append(table_name)
-            logger.info("CSV file loaded successfully.")
 
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
 
         st.success("Data successfully loaded into the database!")
 
+        # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
+        schema = get_schema(selected_table, conn)
 
-        st.write("### Example Queries")
-        for example in EXAMPLE_QUERIES:
-            st.markdown(f"- {example}")
+        st.write("### Table Schema")
+        st.write(schema)
 
+        # Allow users to select columns for the query
         user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
@@ -148,27 +94,23 @@ def main():
                 return
 
             try:
-                columns_query = f"PRAGMA table_info({selected_table});"
-                columns_info = pd.read_sql_query(columns_query, conn)
-                available_columns = [col["name"] for col in columns_info.to_dict(orient='records')]
+                # Replace user-friendly aliases with actual column names
+                query_columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in schema) + r")\b", user_query, re.IGNORECASE)
+                if not query_columns:
+                    st.warning("No matching columns found in the query. Please revise your query.")
+                    return
 
-                desired_columns, start_date, end_date = parse_columns_and_filters(user_query, available_columns)
-                if not desired_columns:
-                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])
-
-                sort_column = next((col for col in ["likes", "engagement_rate", "clicks"] if col in desired_columns), desired_columns[-1])
-                where_clause = f"WHERE date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
-                sql_query = f"SELECT {', '.join(desired_columns)} FROM {selected_table} {where_clause} ORDER BY {sort_column} DESC LIMIT 10"
+                # Construct the SQL query
+                sql_query = f"SELECT {', '.join(query_columns)} FROM {selected_table} ORDER BY {query_columns[-1]} DESC LIMIT 10"
                 st.info(f"Generated SQL Query:\n{sql_query}")
 
-                query_result = extract_data(sql_query, conn)
-                if isinstance(query_result, dict) and "error" in query_result:
-                    st.error(f"Query failed: {query_result['error']}")
-                else:
-                    st.write("### Query Results")
-                    st.dataframe(query_result)
+                # Execute the query
+                query_result = pd.read_sql_query(sql_query, conn)
+                st.write("### Query Results")
+                st.dataframe(query_result)
 
             except Exception as e:
+                logger.error(f"Error executing query: {e}")
                 st.error(f"An error occurred: {e}")
 
     except Exception as e:
