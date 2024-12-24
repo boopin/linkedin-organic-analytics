@@ -1,4 +1,4 @@
-# App Version: 1.0.8
+# App Version: 1.1.0
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -68,6 +68,12 @@ def extract_data(query, database_connection):
     except Exception as e:
         return {"error": str(e)}
 
+def generate_sql_from_prompt(prompt, table_name):
+    """Generate SQL query from user prompt."""
+    if "top 5 dates" in prompt.lower() and "impressions" in prompt.lower():
+        return f"SELECT date, SUM(impressions) as total_impressions FROM {table_name} GROUP BY date ORDER BY total_impressions DESC LIMIT 5;"
+    return None
+
 def main():
     st.title("AI Reports Analyzer with LangChain Workflow")
 
@@ -77,7 +83,8 @@ def main():
         return
 
     try:
-        conn = sqlite3.connect(":memory:")  # In-memory SQLite database
+        # Load and preprocess the uploaded file
+        conn = sqlite3.connect(":memory:")
         table_names = []
 
         if uploaded_file.name.endswith('.xlsx'):
@@ -88,42 +95,48 @@ def main():
             for sheet in sheet_names:
                 df = pd.read_excel(excel_data, sheet_name=sheet)
                 df = preprocess_dataframe_for_arrow(df)
-                table_name = re.sub(r'[^a-zA-Z0-9_]', '_', sheet.lower())  # Clean sheet name for SQLite
+                table_name = sheet.lower().replace(" ", "_")
                 df.to_sql(table_name, conn, index=False, if_exists="replace")
                 table_names.append(table_name)
-                logger.info(f"Sheet '{sheet}' loaded as table '{table_name}'.")
+
         elif uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
             df = preprocess_dataframe_for_arrow(df)
-            table_name = re.sub(r'[^a-zA-Z0-9_]', '_', uploaded_file.name.split('.')[0].lower())  # Clean file name
+            table_name = uploaded_file.name.split('.')[0].lower().replace(" ", "_")
             df.to_sql(table_name, conn, index=False, if_exists="replace")
             table_names.append(table_name)
-            logger.info(f"CSV file loaded as table '{table_name}'.")
+
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
 
         st.success("Data successfully loaded into the database!")
 
-        # Display available tables
-        st.write("### Available Tables")
-        st.write(", ".join(table_names))
+        # Table selection dropdown
+        selected_table = st.selectbox("Select a table to query:", table_names)
 
-        # Provide example queries
-        st.write("### Example Queries")
-        for example in EXAMPLE_QUERIES:
-            st.write(f"- {example}")
+        # Provide example prompts
+        st.write("### Example Prompts")
+        st.write("- Show me the top 5 dates with the highest total impressions.")
+        st.write("- Show me the posts with the most clicks.")
+        st.write("- What is the average engagement rate of all posts?")
+        st.write("- Generate a bar graph of clicks grouped by post type.")
 
         # Provide a text box for SQL query input
-        user_query = st.text_area("Enter your query (e.g., 'SELECT * FROM metrics LIMIT 5;')", "")
+        user_prompt = st.text_area("Enter your prompt or SQL query", "")
 
         if st.button("Run Query"):
-            if not user_query.strip():
-                st.error("Please enter a valid query.")
+            if not user_prompt.strip():
+                st.error("Please enter a valid prompt or query.")
                 return
+
+            # Check if the prompt can be converted to SQL
+            sql_query = generate_sql_from_prompt(user_prompt, selected_table)
+            if not sql_query:
+                sql_query = user_prompt  # Assume the user entered a valid SQL query
 
             # Execute the query and display results
             try:
-                query_result = extract_data(user_query, conn)
+                query_result = extract_data(sql_query, conn)
                 if isinstance(query_result, dict) and "error" in query_result:
                     st.error(f"Query failed: {query_result['error']}")
                 else:
