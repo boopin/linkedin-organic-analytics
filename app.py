@@ -1,4 +1,4 @@
-# App Version: 1.0.5
+# App Version: 1.0.6
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -102,6 +102,29 @@ def execute_workflow(query, db_connection):
         "analysis_result": analysis_result
     }
 
+def load_file(uploaded_file):
+    """Load CSV or Excel and return a pandas DataFrame."""
+    try:
+        if uploaded_file.name.endswith('.xlsx'):
+            excel_data = pd.ExcelFile(uploaded_file)
+            sheet_names = excel_data.sheet_names
+            logger.info(f"Excel file loaded with sheets: {sheet_names}")
+
+            # Let the user select a sheet
+            sheet = st.selectbox("Select a sheet to load:", sheet_names)
+            df = pd.read_excel(excel_data, sheet_name=sheet)
+            logger.info(f"Sheet '{sheet}' loaded successfully.")
+        elif uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+            logger.info("CSV file loaded successfully.")
+        else:
+            raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
+        return df
+    except Exception as e:
+        logger.error(f"Error loading file: {e}")
+        st.error(f"Error loading file: {e}")
+        raise
+
 def main():
     st.title("AI Reports Analyzer with LangChain Workflow")
 
@@ -111,10 +134,7 @@ def main():
         return
 
     try:
-        if uploaded_file.name.endswith(".xlsx"):
-            df = pd.read_excel(uploaded_file)
-        else:
-            df = pd.read_csv(uploaded_file)
+        df = load_file(uploaded_file)
 
         # Preprocess data for SQLite
         df = preprocess_dataframe_for_arrow(df)
