@@ -5,13 +5,15 @@ import sqlite3
 import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage
+from crewai import Agent, Workflow, Task
 import logging
 import difflib
 import re
+from datetime import datetime
 
 # Configure logging
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
+logging.basicConfig(filename="crew.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger()
 
 EXAMPLE_QUERIES = [
     "Show me the top 5 dates with the highest total impressions.",
@@ -188,9 +190,14 @@ class DataAnalyzer:
         except Exception as e:
             raise Exception(f"Analysis Error: {str(e)}\nProcessed Query: {mapped_query}\nOriginal Query: {user_query}")
 
+def extract_data_task(database_connection, query):
+    return extract_data(query, database_connection)
+
+def analyze_data_task(data):
+    return analyze_data(data)
+
 def main():
-    st.title("AI Reports Analyzer (Version 1.0.5)")
-    analyzer = DataAnalyzer()
+    st.title("AI Reports Analyzer with Crew.ai")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     if not uploaded_file:
@@ -199,48 +206,39 @@ def main():
 
     try:
         if uploaded_file.name.endswith(".xlsx"):
-            try:
-                import openpyxl
-            except ImportError:
-                st.error("Missing dependency: openpyxl. Please install it using 'pip install openpyxl'.")
-                return
-
-            excel_file = pd.ExcelFile(uploaded_file)
-            sheet_name = st.selectbox("Select Sheet", excel_file.sheet_names)
-            df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+            df = pd.read_excel(uploaded_file)
         else:
             df = pd.read_csv(uploaded_file)
 
-        success, schema = analyzer.load_data(df)
-        if not success:
-            st.error(f"Failed to load data: {schema}")
-            return
+        # Load data into SQLite
+        conn = sqlite3.connect(":memory:")
+        df.to_sql("uploaded_data", conn, index=False, if_exists="replace")
 
-        st.success("Data loaded successfully!")
+        # Define agents
+        sql_dev = Agent(name="sql_dev", role="Handles SQL queries for data extraction.")
+        data_analyst = Agent(name="data_analyst", role="Analyzes extracted data.")
 
-        st.write("### Dataset Schema")
-        schema_columns = pd.DataFrame({"Column": df.columns, "Data Type": df.dtypes})
-        st.dataframe(schema_columns)
+        # Create workflow
+        workflow = Workflow(
+            name="AI Data Analysis Workflow",
+            tasks=[
+                Task(name="extract_data", func=extract_data_task, inputs={"query": "SELECT * FROM uploaded_data", "database_connection": conn}),
+                Task(name="analyze_data", func=analyze_data_task, inputs={"data": "{extract_data}"})
+            ],
+            agents=[sql_dev, data_analyst],
+            process="sequential",
+            verbose=2,
+            memory=False
+        )
 
-        st.write("### Example Queries")
-        for query in EXAMPLE_QUERIES:
-            st.markdown(f"- {query}")
-
-        user_query = st.text_input("Enter your query")
-        if st.button("Analyze"):
-            try:
-                result, sql_query = analyzer.analyze(user_query, schema, df)
-                st.write("**Results (Table Format):**")
-                st.dataframe(result)
-                st.write("**SQL Query Used:**")
-                st.code(sql_query, language="sql")
-            except ValueError as ve:
-                st.error(f"Validation Error: {ve}")
-            except Exception as e:
-                st.error(f"Error: {e}")
+        # Execute the workflow
+        results = workflow.run()
+        st.write("### Workflow Results")
+        for task, result in results.items():
+            st.write(f"**{task}:**", result)
 
     except Exception as e:
-        st.error(f"Failed to process file: {e}")
+        st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
