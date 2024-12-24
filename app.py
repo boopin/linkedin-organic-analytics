@@ -1,4 +1,4 @@
-# App Version: 1.1.0
+# App Version: 1.0.10
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -68,12 +68,6 @@ def extract_data(query, database_connection):
     except Exception as e:
         return {"error": str(e)}
 
-def generate_sql_from_prompt(prompt, table_name):
-    """Generate SQL query from user prompt."""
-    if "top 5 dates" in prompt.lower() and "impressions" in prompt.lower():
-        return f"SELECT date, SUM(impressions) as total_impressions FROM {table_name} GROUP BY date ORDER BY total_impressions DESC LIMIT 5;"
-    return None
-
 def main():
     st.title("AI Reports Analyzer with LangChain Workflow")
 
@@ -83,10 +77,10 @@ def main():
         return
 
     try:
-        # Load and preprocess the uploaded file
         conn = sqlite3.connect(":memory:")
         table_names = []
 
+        # Load and preprocess the uploaded file
         if uploaded_file.name.endswith('.xlsx'):
             excel_data = pd.ExcelFile(uploaded_file)
             sheet_names = excel_data.sheet_names
@@ -95,53 +89,74 @@ def main():
             for sheet in sheet_names:
                 df = pd.read_excel(excel_data, sheet_name=sheet)
                 df = preprocess_dataframe_for_arrow(df)
-                table_name = sheet.lower().replace(" ", "_")
+                table_name = sheet.lower().replace(" ", "_").replace("-", "_")
                 df.to_sql(table_name, conn, index=False, if_exists="replace")
                 table_names.append(table_name)
+                logger.info(f"Sheet '{sheet}' loaded into table '{table_name}'.")
 
         elif uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
             df = preprocess_dataframe_for_arrow(df)
-            table_name = uploaded_file.name.split('.')[0].lower().replace(" ", "_")
+            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
             df.to_sql(table_name, conn, index=False, if_exists="replace")
             table_names.append(table_name)
+            logger.info("CSV file loaded successfully.")
 
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
 
         st.success("Data successfully loaded into the database!")
 
-        # Table selection dropdown
+        # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
 
-        # Provide example prompts
-        st.write("### Example Prompts")
-        st.write("- Show me the top 5 dates with the highest total impressions.")
-        st.write("- Show me the posts with the most clicks.")
-        st.write("- What is the average engagement rate of all posts?")
-        st.write("- Generate a bar graph of clicks grouped by post type.")
+        # Display column names to assist in query construction
+        st.subheader("Available Columns in the Selected Table")
+        columns_query = f"PRAGMA table_info({selected_table});"
+        columns_info = pd.read_sql_query(columns_query, conn)
+        columns_list = [{"name": col['name'], "type": col['type']} for col in columns_info.to_dict(orient='records')]
+        st.write(columns_list)
 
-        # Provide a text box for SQL query input
-        user_prompt = st.text_area("Enter your prompt or SQL query", "")
+        # Show example queries and provide a text box for SQL query input
+        st.subheader("Example Queries")
+        for example in EXAMPLE_QUERIES:
+            st.markdown(f"- `{example}`")
+
+        user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
-            if not user_prompt.strip():
-                st.error("Please enter a valid prompt or query.")
+            if not user_query.strip():
+                st.error("Please enter a valid query or prompt.")
                 return
 
-            # Check if the prompt can be converted to SQL
-            sql_query = generate_sql_from_prompt(user_prompt, selected_table)
-            if not sql_query:
-                sql_query = user_prompt  # Assume the user entered a valid SQL query
+            # Generate SQL if the user enters a natural language prompt
+            if not user_query.strip().lower().startswith("select"):
+                try:
+                    openai = ChatOpenAI(temperature=0)
+                    messages = [
+                        HumanMessage(content=f"Generate an SQL query based on this prompt: '{user_query}'. The table is '{selected_table}' with columns: {', '.join(col['name'] for col in columns_list)}")
+                    ]
+                    response = openai(messages)
+                    user_query = response.content.strip()
+                    st.info(f"Generated SQL Query:\n{user_query}")
+                except Exception as e:
+                    st.error(f"Failed to generate SQL: {e}")
+                    return
 
             # Execute the query and display results
             try:
-                query_result = extract_data(sql_query, conn)
+                query_result = extract_data(user_query, conn)
+
                 if isinstance(query_result, dict) and "error" in query_result:
                     st.error(f"Query failed: {query_result['error']}")
                 else:
                     st.write("### Query Results")
                     st.dataframe(query_result)
+
+                    # Show a visualization button
+                    if st.button("Visualize Results"):
+                        st.bar_chart(query_result.set_index(query_result.columns[0]))
+
             except Exception as e:
                 st.error(f"An error occurred while processing your query: {e}")
     except Exception as e:
