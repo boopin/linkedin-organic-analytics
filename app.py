@@ -1,4 +1,4 @@
-# App Version: 1.2.0
+# App Version: 1.2.1
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -108,7 +108,7 @@ def main():
                 return
 
             # Delay LLM loading until needed
-            from langchain.chat_models import ChatOpenAI
+            from langchain_openai import ChatOpenAI
             from langchain.schema import HumanMessage
 
             openai_api_key = st.secrets["OPENAI_API_KEY"]
