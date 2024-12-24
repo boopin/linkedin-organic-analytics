@@ -9,16 +9,25 @@ import logging
 import difflib
 import re
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 # Configure logging
 logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
+DEFAULT_COLUMNS = {
+    "all_posts": ["post_title", "post_link", "posted_by", "likes", "date"],
+    "metrics": ["date", "impressions", "clicks", "engagement_rate"],
+}
+
 EXAMPLE_QUERIES = [
     "Show me the top 5 dates with the highest total impressions.",
     "Show me the posts with the most clicks.",
     "What is the average engagement rate of all posts?",
-    "Generate a bar graph of clicks grouped by post type."
+    "Generate a bar graph of clicks grouped by post type.",
+    "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
+    "What are the engagement rates for Q3 2024?",
+    "Show impressions by day for last week."
 ]
 
 class PreprocessingPipeline:
@@ -59,6 +68,30 @@ def preprocess_dataframe_for_arrow(df):
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
             df[col] = df[col].astype("datetime64[ns]")  # Ensure proper datetime format
     return df
+
+def parse_date_range(query):
+    """Extracts and converts date ranges from natural language to SQL-compatible formats."""
+    today = datetime.today()
+    if "last week" in query.lower():
+        start_date = (today - relativedelta(weeks=1)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    elif "last month" in query.lower():
+        start_date = (today - relativedelta(months=1)).strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+    elif match := re.search(r"Q(\d) (\d{4})", query):
+        quarter = int(match.group(1))
+        year = int(match.group(2))
+        start_date = f"{year}-{'01' if quarter == 1 else '04' if quarter == 2 else '07' if quarter == 3 else '10'}-01"
+        end_date = f"{year}-{'03-31' if quarter == 1 else '06-30' if quarter == 2 else '09-30' if quarter == 3 else '12-31'}"
+    else:
+        start_date, end_date = None, None
+    return start_date, end_date
+
+def parse_columns_and_filters(query, available_columns):
+    """Extracts desired columns and additional filters from the user query."""
+    columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in available_columns) + r")\b", query, re.IGNORECASE)
+    start_date, end_date = parse_date_range(query)
+    return list(set(columns)), start_date, end_date
 
 def extract_data(query, database_connection):
     """Extracts data from the database using SQL queries."""
@@ -110,11 +143,6 @@ def main():
         # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
 
-        # Show example queries and provide a text box for SQL query input
-        st.subheader("Example Queries")
-        for example in EXAMPLE_QUERIES:
-            st.markdown(f"- `{example}`")
-
         user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
@@ -122,36 +150,33 @@ def main():
                 st.error("Please enter a valid query or prompt.")
                 return
 
-            # Generate SQL if the user enters a natural language prompt
-            if not user_query.strip().lower().startswith("select"):
-                try:
-                    openai = ChatOpenAI(temperature=0)
-                    messages = [
-                        HumanMessage(content=f"Generate an SQL query based on this prompt: '{user_query}'. The table is '{selected_table}'.")
-                    ]
-                    response = openai(messages)
-                    user_query = response.content.strip()
-                    st.info(f"Generated SQL Query:\n{user_query}")
-                except Exception as e:
-                    st.error(f"Failed to generate SQL: {e}")
-                    return
-
-            # Execute the query and display results
             try:
-                query_result = extract_data(user_query, conn)
+                # Extract available columns for validation
+                columns_query = f"PRAGMA table_info({selected_table});"
+                columns_info = pd.read_sql_query(columns_query, conn)
+                available_columns = [col['name'] for col in columns_info.to_dict(orient='records')]
 
+                # Parse columns and date filters
+                desired_columns, start_date, end_date = parse_columns_and_filters(user_query, available_columns)
+                if not desired_columns:
+                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])  # Use default columns if none are specified
+
+                # Construct SQL query
+                where_clause = f"WHERE date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
+                sql_query = f"SELECT {', '.join(desired_columns)} FROM {selected_table} {where_clause} ORDER BY {desired_columns[-1]} DESC LIMIT 10"
+                st.info(f"Generated SQL Query:\n{sql_query}")
+
+                # Execute the query
+                query_result = extract_data(sql_query, conn)
                 if isinstance(query_result, dict) and "error" in query_result:
                     st.error(f"Query failed: {query_result['error']}")
                 else:
                     st.write("### Query Results")
                     st.dataframe(query_result)
 
-                    # Show a visualization button
-                    if st.button("Visualize Results"):
-                        st.bar_chart(query_result.set_index(query_result.columns[0]))
-
             except Exception as e:
-                st.error(f"An error occurred while processing your query: {e}")
+                st.error(f"An error occurred: {e}")
+
     except Exception as e:
         logger.error(f"Error: {e}")
         st.error(f"Error: {e}")
