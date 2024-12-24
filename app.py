@@ -5,14 +5,13 @@ import sqlite3
 import plotly.express as px
 from langchain.chat_models import ChatOpenAI
 from langchain.schema import HumanMessage, AIMessage
-from crewai import Agent, Workflow, Task
 import logging
 import difflib
 import re
 from datetime import datetime
 
 # Configure logging
-logging.basicConfig(filename="crew.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
 EXAMPLE_QUERIES = [
@@ -61,16 +60,16 @@ def preprocess_dataframe_for_arrow(df):
             df[col] = df[col].astype("datetime64[ns]")  # Ensure proper datetime format
     return df
 
-def extract_data_task(database_connection, query):
-    """Task to extract data from the SQLite database."""
+def extract_data(query, database_connection):
+    """Extracts data from the database using SQL queries."""
     try:
         df = pd.read_sql_query(query, database_connection)
         return preprocess_dataframe_for_arrow(df)  # Ensure compatibility for Arrow serialization
     except Exception as e:
         return {"error": str(e)}
 
-def analyze_data_task(data):
-    """Task to analyze extracted data."""
+def analyze_data(data):
+    """Analyzes and interprets the extracted data."""
     if isinstance(data, dict) and "error" in data:
         return data["error"]
     # Perform sample analysis
@@ -80,8 +79,31 @@ def analyze_data_task(data):
         "sample_data": data.head(5).to_dict()
     }
 
+def execute_workflow(query, db_connection):
+    """
+    Execute a simplified workflow using LangChain for task orchestration.
+    """
+    logger.info("Starting workflow execution.")
+
+    # Step 1: Extract Data
+    logger.info("Executing data extraction task.")
+    extracted_data = extract_data(query, db_connection)
+    if isinstance(extracted_data, dict) and "error" in extracted_data:
+        logger.error(f"Data extraction failed: {extracted_data['error']}")
+        return {"error": extracted_data["error"]}
+
+    # Step 2: Analyze Data
+    logger.info("Executing data analysis task.")
+    analysis_result = analyze_data(extracted_data)
+
+    logger.info("Workflow execution completed.")
+    return {
+        "extracted_data": extracted_data,
+        "analysis_result": analysis_result
+    }
+
 def main():
-    st.title("AI Reports Analyzer with Crew.ai")
+    st.title("AI Reports Analyzer with LangChain Workflow")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     if not uploaded_file:
@@ -101,28 +123,20 @@ def main():
         conn = sqlite3.connect(":memory:")
         df.to_sql("uploaded_data", conn, index=False, if_exists="replace")
 
-        # Define agents
-        sql_dev = Agent(name="sql_dev", role="Handles SQL queries for data extraction.")
-        data_analyst = Agent(name="data_analyst", role="Analyzes extracted data.")
-
-        # Create workflow
-        workflow = Workflow(
-            name="AI Data Analysis Workflow",
-            tasks=[
-                Task(name="extract_data", func=extract_data_task, inputs={"query": "SELECT * FROM uploaded_data", "database_connection": conn}),
-                Task(name="analyze_data", func=analyze_data_task, inputs={"data": "{extract_data}"})
-            ],
-            agents=[sql_dev, data_analyst],
-            process="sequential",
-            verbose=2,
-            memory=False
-        )
+        # Define a query for extraction
+        query = "SELECT * FROM uploaded_data LIMIT 10;"
 
         # Execute the workflow
-        results = workflow.run()
-        st.write("### Workflow Results")
-        for task, result in results.items():
-            st.write(f"**{task}:**", result)
+        results = execute_workflow(query, conn)
+
+        if "error" in results:
+            st.error(f"Workflow failed: {results['error']}")
+        else:
+            st.write("### Extracted Data")
+            st.dataframe(results["extracted_data"])
+
+            st.write("### Analysis Results")
+            st.json(results["analysis_result"])
 
     except Exception as e:
         st.error(f"Error: {e}")
