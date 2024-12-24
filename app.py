@@ -1,109 +1,60 @@
-# App Version: 1.1.1
+# App Version: 1.2.0
 import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage, AIMessage
-import logging
-import difflib
-import re
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+import logging
 
 # Configure logging
-logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(filename="app.log", level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 
+# Default columns for each schema
 DEFAULT_COLUMNS = {
-    "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
-    "metrics": ["date", "impressions", "clicks", "engagement_rate"],
+    "raw": ["date", "impressions", "clicks", "engagement_rate"],
+    "monthly": ["month", "impressions", "clicks", "engagement_rate"],
+    "weekly": ["week", "impressions", "clicks", "engagement_rate"],
+    "quarterly": ["quarter", "impressions", "clicks", "engagement_rate"],
 }
 
-EXAMPLE_QUERIES = [
-    "Show me the top 5 dates with the highest total impressions.",
-    "Show me the posts with the most clicks.",
-    "What is the average engagement rate of all posts?",
-    "Generate a bar graph of clicks grouped by post type.",
-    "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
-    "What are the engagement rates for Q3 2024?",
-    "Show impressions by day for last week.",
-    "Show me the top 5 posts with the highest engagement rate."
-]
+def preprocess_and_create_schemas(df: pd.DataFrame, conn: sqlite3.Connection, table_name: str):
+    """Preprocess the dataframe and create schemas for raw, monthly, weekly, and quarterly data."""
+    # Raw schema
+    df.to_sql(f"{table_name}_raw", conn, index=False, if_exists="replace")
 
-class PreprocessingPipeline:
-    @staticmethod
-    def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-        df.columns = [col.lower().strip().replace(" ", "_").replace("(", "").replace(")", "") for col in df.columns]
-        return df
+    # Add additional time-based columns
+    df["month"] = df["date"].dt.to_period("M")
+    df["week"] = df["date"].dt.to_period("W")
+    df["quarter"] = df["date"].dt.to_period("Q")
 
-    @staticmethod
-    def handle_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        return df
+    # Monthly schema
+    monthly_df = df.groupby("month").sum().reset_index()
+    monthly_df.to_sql(f"{table_name}_monthly", conn, index=False, if_exists="replace")
 
-    @staticmethod
-    def fix_arrow_incompatibility(df: pd.DataFrame) -> pd.DataFrame:
-        for col in df.columns:
-            if df[col].dtype == "object":
-                df[col] = df[col].astype("string", errors="ignore")
-        return df
+    # Weekly schema
+    weekly_df = df.groupby("week").sum().reset_index()
+    weekly_df.to_sql(f"{table_name}_weekly", conn, index=False, if_exists="replace")
 
-    @staticmethod
-    def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
-        df = PreprocessingPipeline.clean_column_names(df)
-        df = PreprocessingPipeline.handle_missing_dates(df)
-        df = PreprocessingPipeline.fix_arrow_incompatibility(df)
-        return df
+    # Quarterly schema
+    quarterly_df = df.groupby("quarter").sum().reset_index()
+    quarterly_df.to_sql(f"{table_name}_quarterly", conn, index=False, if_exists="replace")
 
-def preprocess_dataframe_for_arrow(df):
-    """
-    Preprocess the dataframe to ensure all columns are compatible with Arrow serialization.
-    """
-    for col in df.columns:
-        if pd.api.types.is_object_dtype(df[col]):
-            df[col] = df[col].astype("string")  # Convert object columns to string
-        elif pd.api.types.is_categorical_dtype(df[col]):
-            df[col] = df[col].astype("string")  # Convert categorical columns to string
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].astype("datetime64[ns]")  # Ensure proper datetime format
-    return df
+    logger.info(f"Schemas created for table: {table_name}")
+    return [f"{table_name}_raw", f"{table_name}_monthly", f"{table_name}_weekly", f"{table_name}_quarterly"]
 
-def parse_date_range(query):
-    """Extracts and converts date ranges from natural language to SQL-compatible formats."""
-    today = datetime.today()
-    if "last week" in query.lower():
-        start_date = (today - relativedelta(weeks=1)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-    elif "last month" in query.lower():
-        start_date = (today - relativedelta(months=1)).strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-    elif match := re.search(r"Q(\d) (\d{4})", query):
-        quarter = int(match.group(1))
-        year = int(match.group(2))
-        start_date = f"{year}-{'01' if quarter == 1 else '04' if quarter == 2 else '07' if quarter == 3 else '10'}-01"
-        end_date = f"{year}-{'03-31' if quarter == 1 else '06-30' if quarter == 2 else '09-30' if quarter == 3 else '12-31'}"
-    else:
-        start_date, end_date = None, None
-    return start_date, end_date
-
-def parse_columns_and_filters(query, available_columns):
-    """Extracts desired columns and additional filters from the user query."""
-    columns = re.findall(r"\b(" + "|".join(re.escape(col) for col in available_columns) + r")\b", query, re.IGNORECASE)
-    start_date, end_date = parse_date_range(query)
-    return list(set(columns)), start_date, end_date
-
-def extract_data(query, database_connection):
-    """Extracts data from the database using SQL queries."""
-    try:
-        df = pd.read_sql_query(query, database_connection)
-        return preprocess_dataframe_for_arrow(df)  # Ensure compatibility for Arrow serialization
-    except Exception as e:
-        return {"error": str(e)}
+def display_schema_columns(selected_schema: str, conn: sqlite3.Connection):
+    """Display available columns for the selected schema."""
+    columns_query = f"PRAGMA table_info({selected_schema});"
+    columns_info = pd.read_sql_query(columns_query, conn)
+    available_columns = [col["name"] for col in columns_info.to_dict(orient="records")]
+    st.write("### Available Columns in the Selected Schema")
+    st.write(", ".join(available_columns))
+    return available_columns
 
 def main():
-    st.title("AI Reports Analyzer with LangChain Workflow")
+    st.title("AI Reports Analyzer with Enhanced Schema Support")
 
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
     if not uploaded_file:
@@ -112,42 +63,40 @@ def main():
 
     try:
         conn = sqlite3.connect(":memory:")
-        table_names = []
+        schemas = []
 
-        # Load and preprocess the uploaded file
-        if uploaded_file.name.endswith('.xlsx'):
+        # Load and preprocess uploaded file
+        if uploaded_file.name.endswith(".xlsx"):
             excel_data = pd.ExcelFile(uploaded_file)
-            sheet_names = excel_data.sheet_names
-            logger.info(f"Excel file loaded with sheets: {sheet_names}")
+            for sheet_name in excel_data.sheet_names:
+                df = pd.read_excel(excel_data, sheet_name=sheet_name)
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                table_name = sheet_name.lower().replace(" ", "_")
+                schemas.extend(preprocess_and_create_schemas(df, conn, table_name))
 
-            for sheet in sheet_names:
-                df = pd.read_excel(excel_data, sheet_name=sheet)
-                df = PreprocessingPipeline.preprocess_data(df)
-                table_name = sheet.lower().replace(" ", "_").replace("-", "_")
-                df.to_sql(table_name, conn, index=False, if_exists="replace")
-                table_names.append(table_name)
-                logger.info(f"Sheet '{sheet}' loaded into table '{table_name}'.")
-
-        elif uploaded_file.name.endswith('.csv'):
+        elif uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
-            df = PreprocessingPipeline.preprocess_data(df)
-            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
-            df.to_sql(table_name, conn, index=False, if_exists="replace")
-            table_names.append(table_name)
-            logger.info("CSV file loaded successfully.")
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_")
+            schemas.extend(preprocess_and_create_schemas(df, conn, table_name))
 
         else:
             raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
 
-        st.success("Data successfully loaded into the database!")
+        st.success("Data successfully loaded and schemas created!")
 
-        # Let the user select a table
-        selected_table = st.selectbox("Select a table to query:", table_names)
+        # Allow the user to select a schema
+        selected_schema = st.selectbox("Select a schema to query:", schemas)
 
+        # Display schema-specific columns
+        available_columns = display_schema_columns(selected_schema, conn)
+
+        # Provide example queries
         st.write("### Example Queries")
-        for example in EXAMPLE_QUERIES:
-            st.markdown(f"- {example}")
+        st.write("- Show me impressions_total for July 2024")
+        st.write("- Compare engagement rate between Q3 and Q2 2024")
 
+        # Input query
         user_query = st.text_area("Enter your query or prompt", "")
 
         if st.button("Run Query"):
@@ -156,30 +105,20 @@ def main():
                 return
 
             try:
-                # Extract available columns for validation
-                columns_query = f"PRAGMA table_info({selected_table});"
-                columns_info = pd.read_sql_query(columns_query, conn)
-                available_columns = [col['name'] for col in columns_info.to_dict(orient='records')]
-
-                # Parse columns and date filters
-                desired_columns, start_date, end_date = parse_columns_and_filters(user_query, available_columns)
-                if not desired_columns:
-                    desired_columns = DEFAULT_COLUMNS.get(selected_table, [])  # Use default columns if none are specified
-
                 # Construct SQL query
-                where_clause = f"WHERE date BETWEEN '{start_date}' AND '{end_date}'" if start_date and end_date else ""
-                sql_query = f"SELECT {', '.join(desired_columns)} FROM {selected_table} {where_clause} ORDER BY {desired_columns[-1]} DESC LIMIT 10"
-                st.info(f"Generated SQL Query:\n{sql_query}")
-
-                # Execute the query
-                query_result = extract_data(sql_query, conn)
-                if isinstance(query_result, dict) and "error" in query_result:
-                    st.error(f"Query failed: {query_result['error']}")
+                if "compare" in user_query.lower():
+                    st.warning("Comparison functionality is under development.")
                 else:
+                    sql_query = f"SELECT * FROM {selected_schema} WHERE impressions_total > 0 LIMIT 10"  # Simplified example
+                    st.info(f"Generated SQL Query:\n{sql_query}")
+
+                    # Execute and display the query
+                    query_result = pd.read_sql_query(sql_query, conn)
                     st.write("### Query Results")
                     st.dataframe(query_result)
 
             except Exception as e:
+                logger.error(f"Query Error: {e}")
                 st.error(f"An error occurred: {e}")
 
     except Exception as e:
