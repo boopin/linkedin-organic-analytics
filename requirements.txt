@@ -2,7 +2,8 @@ streamlit==1.41.1
 pandas==2.2.3
 plotly==5.24.1
 openpyxl==3.1.2
-pyarrow==12.0.1
-langchain==0.3.0
-langchain-openai==0.2.14
-crewai
+pyarrow==12.0.0
+langchain==0.0.354
+langchain-openai==0.0.5
+crew-ai==0.28.8
+
