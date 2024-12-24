@@ -1,4 +1,4 @@
-# App Version: 1.1.0
+# App Version: 1.1.1
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -16,7 +16,7 @@ logging.basicConfig(filename="workflow.log", level=logging.DEBUG, format="%(asct
 logger = logging.getLogger()
 
 DEFAULT_COLUMNS = {
-    "all_posts": ["post_title", "post_link", "posted_by", "likes", "date"],
+    "all_posts": ["post_title", "post_link", "posted_by", "likes", "engagement_rate", "date"],
     "metrics": ["date", "impressions", "clicks", "engagement_rate"],
 }
 
@@ -27,7 +27,8 @@ EXAMPLE_QUERIES = [
     "Generate a bar graph of clicks grouped by post type.",
     "Show me the top 10 posts with the most likes, displaying post title, post link, posted by, and likes.",
     "What are the engagement rates for Q3 2024?",
-    "Show impressions by day for last week."
+    "Show impressions by day for last week.",
+    "Show me the top 5 posts with the highest engagement rate."
 ]
 
 class PreprocessingPipeline:
@@ -121,7 +122,7 @@ def main():
 
             for sheet in sheet_names:
                 df = pd.read_excel(excel_data, sheet_name=sheet)
-                df = preprocess_dataframe_for_arrow(df)
+                df = PreprocessingPipeline.preprocess_data(df)
                 table_name = sheet.lower().replace(" ", "_").replace("-", "_")
                 df.to_sql(table_name, conn, index=False, if_exists="replace")
                 table_names.append(table_name)
@@ -129,7 +130,7 @@ def main():
 
         elif uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
-            df = preprocess_dataframe_for_arrow(df)
+            df = PreprocessingPipeline.preprocess_data(df)
             table_name = uploaded_file.name.lower().replace(".csv", "").replace(" ", "_").replace("-", "_")
             df.to_sql(table_name, conn, index=False, if_exists="replace")
             table_names.append(table_name)
@@ -142,6 +143,10 @@ def main():
 
         # Let the user select a table
         selected_table = st.selectbox("Select a table to query:", table_names)
+
+        st.write("### Example Queries")
+        for example in EXAMPLE_QUERIES:
+            st.markdown(f"- {example}")
 
         user_query = st.text_area("Enter your query or prompt", "")
 
